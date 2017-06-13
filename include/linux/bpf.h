@@ -233,6 +233,7 @@ int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
 
 int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp);
+int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb);
 
 #ifdef CONFIG_BPF_SYSCALL
 DECLARE_PER_CPU(int, bpf_prog_active);
