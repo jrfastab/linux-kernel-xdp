@@ -2214,7 +2214,7 @@ static struct sk_buff *ixgbe_run_xdp(struct ixgbe_adapter *adapter,
 				     struct ixgbe_ring *rx_ring,
 				     struct xdp_buff *xdp)
 {
-	int result = IXGBE_XDP_PASS;
+	int err, result = IXGBE_XDP_PASS;
 	struct bpf_prog *xdp_prog;
 	u32 act;
 
@@ -2230,6 +2230,13 @@ static struct sk_buff *ixgbe_run_xdp(struct ixgbe_adapter *adapter,
 		break;
 	case XDP_TX:
 		result = ixgbe_xmit_xdp_ring(adapter, xdp);
+		break;
+	case XDP_REDIRECT:
+		err = xdp_do_redirect(adapter->netdev, xdp);
+		if (!err)
+			result = IXGBE_XDP_TX;
+		else
+			result = IXGBE_XDP_CONSUMED;
 		break;
 	default:
 		bpf_warn_invalid_xdp_action(act);
@@ -9807,6 +9814,16 @@ static int ixgbe_xdp(struct net_device *dev, struct netdev_xdp *xdp)
 	}
 }
 
+static void ixgbe_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
+{
+	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	int err;
+
+	err = ixgbe_xmit_xdp_ring(adapter, xdp);
+	if (err != IXGBE_XDP_TX)
+		put_page(xdp->data);
+}
+
 static const struct net_device_ops ixgbe_netdev_ops = {
 	.ndo_open		= ixgbe_open,
 	.ndo_stop		= ixgbe_close,
@@ -9853,6 +9870,7 @@ static const struct net_device_ops ixgbe_netdev_ops = {
 	.ndo_udp_tunnel_del	= ixgbe_del_udp_tunnel_port,
 	.ndo_features_check	= ixgbe_features_check,
 	.ndo_xdp		= ixgbe_xdp,
+	.ndo_xdp_xmit		= ixgbe_xdp_xmit,
 };
 
 /**
