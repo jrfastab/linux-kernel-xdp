@@ -14,6 +14,7 @@
 #include <linux/percpu.h>
 #include <linux/err.h>
 #include <linux/rbtree_latch.h>
+#include <linux/filter.h>
 
 struct perf_event;
 struct bpf_map;
@@ -240,6 +241,8 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
 int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
+
+int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp);
 
 #ifdef CONFIG_BPF_SYSCALL
 DECLARE_PER_CPU(int, bpf_prog_active);
