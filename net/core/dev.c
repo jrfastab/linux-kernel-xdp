@@ -3952,7 +3952,8 @@ static struct static_key generic_xdp_needed __read_mostly;
 
 static int do_xdp_generic(struct sk_buff *skb)
 {
-	struct bpf_prog *xdp_prog = rcu_dereference(skb->dev->xdp_prog);
+	struct net_device *dev = skb->dev;
+	struct bpf_prog *xdp_prog = rcu_dereference(dev->xdp_prog);
 
 	if (xdp_prog) {
 		u32 act = netif_receive_generic_xdp(skb, xdp_prog);
@@ -3964,6 +3965,8 @@ static int do_xdp_generic(struct sk_buff *skb)
 				err = xdp_do_generic_redirect(skb->dev, skb);
 				if (err)
 					goto out_redir;
+				trace_xdp_redirect(dev, skb->dev,
+						   xdp_prog, act);
 			/* fallthru to submit skb */
 			case XDP_TX:
 				generic_xdp_tx(skb, xdp_prog);
