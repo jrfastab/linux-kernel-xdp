@@ -346,6 +346,11 @@ union bpf_attr {
  *     @flags: bit 0 - if set, redirect to ingress instead of egress
  *             other bits - reserved
  *     Return: TC_ACT_REDIRECT
+ * int bpf_redirect_map(key, map, flags)
+ *     redirect to endpoint in map
+ *     @key: index in map to lookup
+ *     @map: fd of map to do lookup in
+ *     @flags: --
  *
  * u32 bpf_get_route_realm(skb)
  *     retrieve a dst's tclassid
@@ -569,7 +574,8 @@ union bpf_attr {
 	FN(probe_read_str),		\
 	FN(get_socket_cookie),		\
 	FN(get_socket_uid),		\
-	FN(set_hash),
+	FN(set_hash),			\
+	FN(redirect_map),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
