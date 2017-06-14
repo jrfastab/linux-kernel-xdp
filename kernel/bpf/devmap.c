@@ -45,6 +45,7 @@
 
 struct bpf_dtab_netdev {
 	struct net_device *dev;
+	int key;
 	struct rcu_head rcu;
 	struct bpf_dtab *dtab;
 };
@@ -155,6 +156,16 @@ static int dev_map_get_next_key(struct bpf_map *map, void *key, void *next_key)
 
 	*next = index + 1;
 	return 0;
+}
+
+struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
+{
+	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+
+	if (key >= map->max_entries)
+		return NULL;
+
+	return dtab->netdev_map[key] ? dtab->netdev_map[key]->dev : NULL;
 }
 
 /* rcu_read_lock (from syscall and BPF contexts) ensures that if a delete and/or
