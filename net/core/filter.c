@@ -1779,6 +1779,7 @@ struct redirect_info {
 	u32 ifindex;
 	u32 flags;
 	struct bpf_map *map;
+	struct bpf_map *map_to_flush;
 };
 
 static DEFINE_PER_CPU(struct redirect_info, redirect_info);
@@ -2326,13 +2327,23 @@ static const struct bpf_func_proto bpf_xdp_adjust_head_proto = {
 
 static int __bpf_tx_xdp(struct net_device *dev, struct xdp_buff *xdp)
 {
-	if (dev->netdev_ops->ndo_xdp_xmit) {
-		dev->netdev_ops->ndo_xdp_xmit(dev, xdp);
-		return 0;
-	}
+	if (dev->netdev_ops->ndo_xdp_xmit)
+		return dev->netdev_ops->ndo_xdp_xmit(dev, xdp);
 	bpf_warn_invalid_xdp_redirect(dev->ifindex);
 	return -EOPNOTSUPP;
 }
+
+void xdp_do_flush_map(void)
+{
+	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+	struct bpf_map *map = ri->map_to_flush;
+
+	if (map)
+		__dev_map_flush(map);
+	ri->map = NULL;
+	ri->map_to_flush = NULL;
+}
+EXPORT_SYMBOL_GPL(xdp_do_flush_map);
 
 int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 			struct bpf_prog *xdp_prog)
@@ -2346,6 +2357,11 @@ int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 		goto out;
 
 	ri->ifindex = 0;
+
+	if (ri->map_to_flush && (ri->map_to_flush != map))
+		xdp_do_flush_map();
+
+	ri->map_to_flush = map;
 	ri->map = NULL;
 
 	trace_xdp_redirect(dev, fwd, xdp_prog, XDP_REDIRECT);
@@ -2376,8 +2392,12 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
 	}
 
 	trace_xdp_redirect(dev, fwd, xdp_prog, XDP_REDIRECT);
+	err = __bpf_tx_xdp(fwd, xdp);
+	if (err)
+		return err;
 
-	return __bpf_tx_xdp(fwd, xdp);
+	fwd->netdev_ops->ndo_xdp_flush(fwd);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(xdp_do_redirect);
 
