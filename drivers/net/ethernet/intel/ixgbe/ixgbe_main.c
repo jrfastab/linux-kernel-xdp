@@ -2415,6 +2415,8 @@ static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		 */
 		wmb();
 		writel(ring->next_to_use, ring->tail);
+
+		xdp_do_flush_map();
 	}
 
 	u64_stats_update_begin(&rx_ring->syncp);
@@ -9817,21 +9819,27 @@ static int ixgbe_xdp(struct net_device *dev, struct netdev_xdp *xdp)
 static void ixgbe_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
 {
 	struct ixgbe_adapter *adapter = netdev_priv(dev);
-	struct ixgbe_ring *ring;
 	int err;
 
 	err = adapter->xdp_prog ? ixgbe_xmit_xdp_ring(adapter, xdp) : -EINVAL;
-	if (err != IXGBE_XDP_TX) {
+	if (err != IXGBE_XDP_TX)
 		page_frag_free(xdp->data);
+}
+
+static void ixgbe_xdp_flush(struct net_device *dev)
+{
+	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	struct ixgbe_ring *ring;
+
+	ring = adapter->xdp_prog ? adapter->xdp_ring[smp_processor_id()] : NULL;
+
+	if (unlikely(!ring))
 		return;
-	}
 
 	/* Force memory writes to complete before letting h/w know there
 	 * are new descriptors to fetch.
 	 */
 	wmb();
-
-	ring = adapter->xdp_ring[smp_processor_id()];
 	writel(ring->next_to_use, ring->tail);
 }
 
@@ -9882,6 +9890,7 @@ static const struct net_device_ops ixgbe_netdev_ops = {
 	.ndo_features_check	= ixgbe_features_check,
 	.ndo_xdp		= ixgbe_xdp,
 	.ndo_xdp_xmit		= ixgbe_xdp_xmit,
+	.ndo_xdp_flush		= ixgbe_xdp_flush,
 };
 
 /**

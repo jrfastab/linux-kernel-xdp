@@ -1779,6 +1779,7 @@ struct redirect_info {
 	u32 ifindex;
 	u32 flags;
 	struct bpf_map *map;
+	struct bpf_map *map_to_flush;
 };
 
 static DEFINE_PER_CPU(struct redirect_info, redirect_info);
@@ -1792,7 +1793,6 @@ BPF_CALL_2(bpf_redirect, u32, ifindex, u64, flags)
 
 	ri->ifindex = ifindex;
 	ri->flags = flags;
-	ri->map = 0;
 
 	return TC_ACT_REDIRECT;
 }
@@ -2334,6 +2334,18 @@ static int __bpf_tx_xdp(struct net_device *dev, struct xdp_buff *xdp)
 	return -EOPNOTSUPP;
 }
 
+void xdp_do_flush_map(void)
+{
+	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+	struct bpf_map *map = ri->map_to_flush;
+
+	if (map)
+		__dev_map_flush(map);
+	ri->map = NULL;
+	ri->map_to_flush = NULL;
+}
+EXPORT_SYMBOL_GPL(xdp_do_flush_map);
+
 int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
@@ -2346,6 +2358,11 @@ int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp)
 		goto out;
 
 	ri->ifindex = 0;
+
+	if (ri->map_to_flush && (ri->map_to_flush != map))
+		xdp_do_flush_map();
+
+	ri->map_to_flush = map;
 	ri->map = NULL;
 
 	xdp_prog = rcu_dereference(dev->xdp_prog);

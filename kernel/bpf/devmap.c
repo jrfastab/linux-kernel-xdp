@@ -24,6 +24,7 @@ struct bpf_dtab_netdev {
 struct bpf_dtab {
 	struct bpf_map map;
 	struct bpf_dtab_netdev **netdev_map;
+	unsigned long int __percpu *flush_needed;
 };
 
 static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
@@ -69,6 +70,14 @@ static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
 	if (err)
 		goto free_dtab;
 
+	/* A per cpu bitfield with a bit per possible net device */
+	dtab->flush_needed = __alloc_percpu(
+				BITS_TO_LONGS(attr->max_entries) *
+				sizeof(unsigned long),
+				__alignof__(unsigned long));
+	if (!dtab->flush_needed)
+		goto free_dtab;
+
 	dtab->netdev_map = bpf_map_area_alloc(dtab->map.max_entries *
 					      sizeof(struct bpf_dtab_netdev *));
 	if (!dtab->netdev_map)
@@ -77,6 +86,7 @@ static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
 	return &dtab->map;
 
 free_dtab:
+	free_percpu(dtab->flush_needed);
 	kfree(dtab);
 	return ERR_PTR(err);
 }
@@ -84,7 +94,7 @@ free_dtab:
 static void dev_map_free(struct bpf_map *map)
 {
 	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
-	int i;
+	int i, cpu;
 
 	/* At this point bpf_prog->aux->refcnt == 0 and this map->refcnt == 0,
 	 * so the programs (can be more than one that used this map) were
@@ -94,6 +104,18 @@ static void dev_map_free(struct bpf_map *map)
 	 * flush operations (if any) are complete.
 	 */
 	synchronize_rcu();
+
+	/* To ensure all pending flush operations have completed wait for flush
+	 * bitmap to indicate all flush_needed bits to be zero on _all_ cpus.
+	 * Because the above synchronize_rcu() ensures the map is disconnected
+	 * from the program we can assume no new bits will be set.
+	 */
+	for_each_online_cpu(cpu) {
+		unsigned long *bitmap = per_cpu_ptr(dtab->flush_needed, cpu);
+
+		while (!bitmap_empty(bitmap, dtab->map.max_entries))
+			cpu_relax();
+	}
 
 	for (i = 0; i < dtab->map.max_entries; i++) {
 		struct bpf_dtab_netdev *dev;
@@ -108,6 +130,7 @@ static void dev_map_free(struct bpf_map *map)
 
 	/* At this point bpf program is detached and all pending operations
 	 * _must_ be complete */
+	free_percpu(dtab->flush_needed);
 	bpf_map_area_free(dtab->netdev_map);
 	kfree(dtab);
 }
@@ -140,6 +163,39 @@ struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 	return dtab->netdev_map[key] ? dtab->netdev_map[key]->dev : NULL;
 }
 
+/* __dev_map_flush is called from xdp_do_flush_map() which _must_ be signaled
+ * from the driver before returning from its napi->poll() routine. The poll()
+ * routine is called either from busy_poll context or net_rx_action signaled
+ * from NET_RX_SOFTIRQ. Either way the poll routine must complete before the
+ * net device can be torn down. On devmap tear down we ensure the ctx bitmap
+ * is zeroed before completing to ensure all flush operations have completed.
+ */
+void __dev_map_flush(struct bpf_map *map)
+{
+	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+	unsigned long *bitmap = this_cpu_ptr(dtab->flush_needed);
+	u32 bit;
+
+	for_each_set_bit(bit, bitmap, map->max_entries) {
+		struct bpf_dtab_netdev *dev = dtab->netdev_map[bit];
+		struct net_device *netdev;
+
+		/* This is possible if the dev entry is removed by user space
+		 * between xdp redirect and flush op.
+		 */
+		if (unlikely(!dev))
+			return;
+
+		netdev = dev->dev;
+
+		clear_bit(bit, bitmap);
+		if (unlikely(!netdev || !netdev->netdev_ops->ndo_xdp_flush))
+			return;
+
+		netdev->netdev_ops->ndo_xdp_flush(netdev);
+	}
+}
+
 /* rcu_read_lock (from syscall and BPF contexts) ensures that if a delete and/or
  * update happens in parallel here a dev_put wont happen until after reading the
  * ifindex.
@@ -159,6 +215,23 @@ static void *dev_map_lookup_elem(struct bpf_map *map, void *key)
 		ifindex = dev->dev->ifindex;
 
 	return ifindex ? &ifindex : NULL;
+}
+
+static void dev_map_flush_old(struct bpf_dtab *dtab,
+			      struct bpf_dtab_netdev *old_dev, int key)
+{
+	if (old_dev->dev->netdev_ops->ndo_xdp_flush) {
+		int cpu;
+
+		for_each_online_cpu(cpu) {
+			unsigned long *bitmap =
+				per_cpu_ptr(dtab->flush_needed, cpu);
+			struct net_device *fl = old_dev->dev;
+
+			clear_bit(key, bitmap);
+			fl->netdev_ops->ndo_xdp_flush(old_dev->dev);
+		}
+	}
 }
 
 static int dev_map_delete_elem(struct bpf_map *map, void *key)
@@ -181,6 +254,7 @@ static int dev_map_delete_elem(struct bpf_map *map, void *key)
 	old_dev = xchg(&dtab->netdev_map[k], NULL);
 	if (old_dev) {
 		synchronize_rcu();
+		dev_map_flush_old(dtab, old_dev, k);
 		dev_put(old_dev->dev);
 		kfree(old_dev);
 	}
@@ -226,7 +300,7 @@ static int dev_map_update_elem(struct bpf_map *map, void *key, void *value,
 	old_dev = xchg(&dtab->netdev_map[i], dev);
 	if (old_dev) {
 		synchronize_rcu();
-
+		dev_map_flush_old(dtab, old_dev, i);
 		dev_put(old_dev->dev);
 		kfree(old_dev);
 	}

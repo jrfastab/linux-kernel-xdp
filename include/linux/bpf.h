@@ -232,8 +232,15 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
 
+/* The pair of xdp_do_redirect and xdp_do_flush_map MUST be called in the
+ * same cpu context. Further for best results no more than a single map
+ * for the do_redirect/do_flush pair should be used. This limitation is
+ * because we only track one map and force a flush when the map changes.
+ * This does not appear to be a real limiation for existing software.
+ */
 int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp);
 int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb);
+void xdp_do_flush_map(void);
 
 #ifdef CONFIG_BPF_SYSCALL
 DECLARE_PER_CPU(int, bpf_prog_active);
@@ -368,5 +375,6 @@ u64 bpf_user_rnd_u32(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5);
 
 /* Map specifics */
 struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key);
+void __dev_map_flush(struct bpf_map *map);
 
 #endif /* _LINUX_BPF_H */
