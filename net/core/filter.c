@@ -1792,7 +1792,6 @@ BPF_CALL_2(bpf_redirect, u32, ifindex, u64, flags)
 
 	ri->ifindex = ifindex;
 	ri->flags = flags;
-	ri->map = 0;
 
 	return TC_ACT_REDIRECT;
 }
@@ -2346,7 +2345,6 @@ int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp)
 		goto out;
 
 	ri->ifindex = 0;
-	ri->map = NULL;
 
 	xdp_prog = rcu_dereference(dev->xdp_prog);
 	trace_xdp_redirect(dev, fwd, xdp_prog, XDP_REDIRECT);
@@ -2354,9 +2352,18 @@ int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp)
 	return __bpf_tx_xdp(fwd, xdp);
 out:
 	ri->ifindex = 0;
-	ri->map = NULL;
 	return -EINVAL;
 }
+
+void xdp_do_flush_map(void)
+{
+	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+	struct bpf_map *map = ri->map;
+
+	__dev_map_flush(map);
+	ri->map = NULL;
+}
+EXPORT_SYMBOL_GPL(xdp_do_flush_map);
 
 int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp)
 {
