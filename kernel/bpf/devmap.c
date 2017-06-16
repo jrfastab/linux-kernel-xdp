@@ -17,10 +17,6 @@
 #include "bpf_lru_list.h"
 #include "map_in_map.h"
 
-struct bpf_dtab_netdev {
-	struct net_device *dev;
-};
-
 struct bpf_dtab {
 	struct bpf_map map;
 	struct bpf_dtab_netdev **netdev_map;
@@ -125,6 +121,7 @@ static void dev_map_free(struct bpf_map *map)
 			continue;
 
 		dev_put(dev->dev);
+		free_percpu(dev->ctx);
 		kfree(dev);
 	}
 
@@ -153,14 +150,30 @@ static int dev_map_get_next_key(struct bpf_map *map, void *key, void *next_key)
 	return 0;
 }
 
-struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
+/* __dev_map_insert_ctx and __dev_map_lookup_elem must be used inside
+ * the same rcu_read_lock/unlock critical sections. Expected use case
+ * is to use __dev_map_lookup_elem and __dev_map_insert_ctx in pairs.
+ */
+void __dev_map_insert_ctx(struct bpf_map *map, struct bpf_dtab_netdev *dev,
+			  void *ctx, u32 key)
+{
+	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+	unsigned long *bitmap = this_cpu_ptr(dtab->flush_needed);
+	void **__ctx;
+
+	__ctx = this_cpu_ptr(dev->ctx);
+	set_bit(key, bitmap);
+	*__ctx = ctx;
+}
+
+struct bpf_dtab_netdev *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 {
 	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
 
 	if (key >= map->max_entries)
 		return NULL;
 
-	return dtab->netdev_map[key] ? dtab->netdev_map[key]->dev : NULL;
+	return dtab->netdev_map[key];
 }
 
 /* __dev_map_flush is called from xdp_do_flush_map() which _must_ be signaled
@@ -179,6 +192,7 @@ void __dev_map_flush(struct bpf_map *map)
 	for_each_set_bit(bit, bitmap, map->max_entries) {
 		struct bpf_dtab_netdev *dev = dtab->netdev_map[bit];
 		struct net_device *netdev;
+		void **ctx;
 
 		/* This is possible if the dev entry is removed by user space
 		 * between xdp redirect and flush op.
@@ -186,13 +200,17 @@ void __dev_map_flush(struct bpf_map *map)
 		if (unlikely(!dev))
 			return;
 
+		ctx = this_cpu_ptr(dev->ctx);
 		netdev = dev->dev;
 
 		clear_bit(bit, bitmap);
-		if (unlikely(!netdev || !netdev->netdev_ops->ndo_xdp_flush))
+		if (unlikely(!*ctx ||
+			     !netdev ||
+			     !netdev->netdev_ops->ndo_xdp_flush))
 			return;
 
-		netdev->netdev_ops->ndo_xdp_flush(netdev);
+		netdev->netdev_ops->ndo_xdp_flush(netdev, *ctx);
+		*ctx = NULL;
 	}
 }
 
@@ -220,15 +238,20 @@ static void *dev_map_lookup_elem(struct bpf_map *map, void *key)
 static void dev_map_flush_old(struct bpf_dtab *dtab,
 			      struct bpf_dtab_netdev *old_dev, int key)
 {
-	if (old_dev->dev->netdev_ops->ndo_xdp_flush) {
+	if (old_dev->ctx && old_dev->dev->netdev_ops->ndo_xdp_flush) {
 		struct net_device *fl = old_dev->dev;
 		unsigned long *bitmap;
 		int cpu;
 
 		for_each_online_cpu(cpu) {
+			void **ctx = per_cpu_ptr(old_dev->ctx, cpu);
+
 			bitmap = per_cpu_ptr(dtab->flush_needed, cpu);
 			clear_bit(key, bitmap);
-			fl->netdev_ops->ndo_xdp_flush(old_dev->dev);
+			if (!*ctx)
+				continue;
+
+			fl->netdev_ops->ndo_xdp_flush(old_dev->dev, *ctx);
 		}
 	}
 }
@@ -255,6 +278,7 @@ static int dev_map_delete_elem(struct bpf_map *map, void *key)
 		synchronize_rcu();
 		dev_map_flush_old(dtab, old_dev, k);
 		dev_put(old_dev->dev);
+		free_percpu(old_dev->ctx);
 		kfree(old_dev);
 	}
 	return 0;
@@ -285,8 +309,15 @@ static int dev_map_update_elem(struct bpf_map *map, void *key, void *value,
 		if (!dev)
 			return -ENOMEM;
 
+		dev->ctx = alloc_percpu(void *);
+		if (!dev->ctx) {
+			kfree(dev);
+			return -ENOMEM;
+		}
+
 		dev->dev = dev_get_by_index(net, ifindex);
 		if (!dev->dev) {
+			free_percpu(dev->ctx);
 			kfree(dev);
 			return -EINVAL;
 		}
@@ -301,6 +332,7 @@ static int dev_map_update_elem(struct bpf_map *map, void *key, void *value,
 		synchronize_rcu();
 		dev_map_flush_old(dtab, old_dev, i);
 		dev_put(old_dev->dev);
+		free_percpu(old_dev->ctx);
 		kfree(old_dev);
 	}
 

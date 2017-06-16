@@ -1139,12 +1139,16 @@ struct xfrmdev_ops {
  * int (*ndo_xdp)(struct net_device *dev, struct netdev_xdp *xdp);
  *	This function is used to set or query state related to XDP on the
  *	netdevice. See definition of enum xdp_netdev_command for details.
- * void (*ndo_xdp_xmit)(struct net_device *dev, struct xdp_buff *xdp);
+ * void *(*ndo_xdp_xmit)(struct net_device *dev, struct xdp_buff *xdp);
  *	This function is used to submit a XDP packet for transmit on a
- *	netdevice.
- * void (*ndo_xdp_flush)(struct net_device *dev);
- *	This function is used to inform the driver to flush a paticular
- *	xpd tx queue. Must be called on same CPU as xdp_xmit.
+ *	netdevice. The return value is a not used by stack but is returned
+ *	as the 'ctx' pointer in the ndo_xdp_flush operation.
+ * void (*ndo_xdp_flush)(struct net_device *dev, void *ctx);
+ *	This function is used to inform the driver to flush a specific
+ *	xpd tx queue. The 'ctx' pointer is the return value of ndo_xdp_xmit
+ *	this allows drivers to pass context values from the xmit routine to
+ *	the flush routine. Typical use case is to push the tx ring that needs
+ *	to be flushed. This routine must be called on same CPU as xdp_xmit.
  */
 struct net_device_ops {
 	int			(*ndo_init)(struct net_device *dev);
@@ -1329,9 +1333,10 @@ struct net_device_ops {
 						       int needed_headroom);
 	int			(*ndo_xdp)(struct net_device *dev,
 					   struct netdev_xdp *xdp);
-	void			(*ndo_xdp_xmit)(struct net_device *dev,
+	void*			(*ndo_xdp_xmit)(struct net_device *dev,
 						struct xdp_buff *xdp);
-	void			(*ndo_xdp_flush)(struct net_device *dev);
+	void			(*ndo_xdp_flush)(struct net_device *dev,
+						 void *ctx);
 };
 
 /**
