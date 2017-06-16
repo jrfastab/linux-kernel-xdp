@@ -526,6 +526,8 @@ static int map_update_elem(union bpf_attr *attr)
 		err = bpf_fd_htab_map_update_elem(map, f.file, key, value,
 						  attr->flags);
 		rcu_read_unlock();
+	} else if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
+		err = map->ops->map_update_elem(map, key, value, attr->flags);
 	} else {
 		rcu_read_lock();
 		err = map->ops->map_update_elem(map, key, value, attr->flags);
