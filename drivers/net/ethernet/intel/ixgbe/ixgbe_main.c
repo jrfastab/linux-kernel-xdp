@@ -2207,8 +2207,7 @@ static struct sk_buff *ixgbe_build_skb(struct ixgbe_ring *rx_ring,
 #define IXGBE_XDP_CONSUMED 1
 #define IXGBE_XDP_TX 2
 
-static int ixgbe_xmit_xdp_ring(struct ixgbe_adapter *adapter,
-			       struct xdp_buff *xdp);
+static int ixgbe_xmit_xdp_ring(struct ixgbe_ring *ring, struct xdp_buff *xdp);
 
 static struct sk_buff *ixgbe_run_xdp(struct ixgbe_adapter *adapter,
 				     struct ixgbe_ring *rx_ring,
@@ -2216,6 +2215,7 @@ static struct sk_buff *ixgbe_run_xdp(struct ixgbe_adapter *adapter,
 {
 	int err, result = IXGBE_XDP_PASS;
 	struct bpf_prog *xdp_prog;
+	struct ixgbe_ring *ring;
 	u32 act;
 
 	rcu_read_lock();
@@ -2229,7 +2229,8 @@ static struct sk_buff *ixgbe_run_xdp(struct ixgbe_adapter *adapter,
 	case XDP_PASS:
 		break;
 	case XDP_TX:
-		result = ixgbe_xmit_xdp_ring(adapter, xdp);
+		ring = adapter->xdp_ring[smp_processor_id()];
+		result = ixgbe_xmit_xdp_ring(ring, xdp);
 		break;
 	case XDP_REDIRECT:
 		err = xdp_do_redirect(adapter->netdev, xdp);
@@ -8237,10 +8238,8 @@ static u16 ixgbe_select_queue(struct net_device *dev, struct sk_buff *skb,
 #endif
 }
 
-static int ixgbe_xmit_xdp_ring(struct ixgbe_adapter *adapter,
-			       struct xdp_buff *xdp)
+static int ixgbe_xmit_xdp_ring(struct ixgbe_ring *ring, struct xdp_buff *xdp)
 {
-	struct ixgbe_ring *ring = adapter->xdp_ring[smp_processor_id()];
 	struct ixgbe_tx_buffer *tx_buffer;
 	union ixgbe_adv_tx_desc *tx_desc;
 	u32 len, cmd_type;
@@ -9816,25 +9815,28 @@ static int ixgbe_xdp(struct net_device *dev, struct netdev_xdp *xdp)
 	}
 }
 
-static void ixgbe_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
-{
-	struct ixgbe_adapter *adapter = netdev_priv(dev);
-	int err;
-
-	err = adapter->xdp_prog ? ixgbe_xmit_xdp_ring(adapter, xdp) : -EINVAL;
-	if (err != IXGBE_XDP_TX)
-		page_frag_free(xdp->data);
-}
-
-static void ixgbe_xdp_flush(struct net_device *dev)
+static void *ixgbe_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
 {
 	struct ixgbe_adapter *adapter = netdev_priv(dev);
 	struct ixgbe_ring *ring;
+	int err;
 
 	ring = adapter->xdp_prog ? adapter->xdp_ring[smp_processor_id()] : NULL;
 
 	if (unlikely(!ring))
-		return;
+		return NULL;
+
+	err = ixgbe_xmit_xdp_ring(ring, xdp);
+
+	if (err != IXGBE_XDP_TX)
+		return NULL;
+
+	return ring;
+}
+
+static void ixgbe_xdp_flush(struct net_device *dev, void *ctx)
+{
+	struct ixgbe_ring *ring = ctx;
 
 	/* Force memory writes to complete before letting h/w know there
 	 * are new descriptors to fetch.
