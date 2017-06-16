@@ -21,6 +21,7 @@ struct bpf_dtab {
 	struct bpf_map map;
 	struct net_device **netdev_map;
 	long unsigned int __percpu *flush_needed;
+	void __percpu **ctx;
 };
 
 static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
@@ -75,6 +76,11 @@ static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
 	if (!dtab->flush_needed)
 		goto free_dtab;
 
+	dtab->ctx = __alloc_percpu(attr->max_entries * sizeof(void *),
+				   __alignof__(void *));
+	if (!dtab->ctx)
+		goto free_dtab;
+
 	dtab->netdev_map = bpf_map_area_alloc(dtab->map.max_entries *
 					      sizeof(struct net_device *));
 	if (!dtab->netdev_map)
@@ -84,6 +90,7 @@ static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
 
 free_dtab:
 	free_percpu(dtab->flush_needed);
+	free_percpu(dtab->ctx);
 	kfree(dtab);
 	return ERR_PTR(err);
 }
@@ -135,6 +142,13 @@ static int dev_map_get_next_key(struct bpf_map *map, void *key, void *next_key)
 	return 0;
 }
 
+void __dev_map_insert_ctx(struct bpf_map *map, void *ctx, u32 key)
+{
+	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+
+	this_cpu_ptr(dtab->ctx)[key] = ctx;
+}
+
 struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 {
 	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
@@ -142,7 +156,6 @@ struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 	if (key >= map->max_entries)
 		return NULL;
 
-	__set_bit(key, this_cpu_ptr(dtab->flush_needed));
 	return dtab->netdev_map[key];
 }
 
@@ -159,7 +172,10 @@ void __dev_map_flush(struct bpf_map *map)
 
 		if (unlikely(!dev))
 			continue;
-		dev->netdev_ops->ndo_xdp_flush(dev);
+
+		dev->netdev_ops->ndo_xdp_flush(dev,
+					       this_cpu_ptr(dtab->ctx)[bit]);
+		this_cpu_ptr(dtab->ctx)[bit] = NULL;
 	}
 }
 

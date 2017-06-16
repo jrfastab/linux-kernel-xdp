@@ -2324,10 +2324,14 @@ static const struct bpf_func_proto bpf_xdp_adjust_head_proto = {
 	.arg2_type	= ARG_ANYTHING,
 };
 
-static int __bpf_tx_xdp(struct net_device *dev, struct xdp_buff *xdp)
+static int __bpf_tx_xdp(struct net_device *dev, struct bpf_map *map,
+			struct xdp_buff *xdp, __u32 index)
 {
 	if (dev->netdev_ops->ndo_xdp_xmit) {
-		dev->netdev_ops->ndo_xdp_xmit(dev, xdp);
+		void *ctx = dev->netdev_ops->ndo_xdp_xmit(dev, xdp);
+
+		if (ctx)
+			__dev_map_insert_ctx(map, ctx, index);
 		return 0;
 	}
 	bpf_warn_invalid_xdp_redirect(dev->ifindex);
@@ -2346,14 +2350,15 @@ void xdp_do_flush_map(void)
 }
 EXPORT_SYMBOL_GPL(xdp_do_flush_map);
 
-int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp)
+int xdp_do_redirect_map(struct net_device *dev,
+			struct bpf_map *map, struct xdp_buff *xdp)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
-	struct bpf_map *map = ri->map;
 	struct bpf_prog *xdp_prog;
 	struct net_device *fwd;
+	u32 key = ri->ifindex;
 
-	fwd = __dev_map_lookup_elem(map, ri->ifindex);
+	fwd = __dev_map_lookup_elem(map, key);
 	if (!fwd)
 		goto out;
 
@@ -2368,7 +2373,7 @@ int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp)
 	xdp_prog = rcu_dereference(dev->xdp_prog);
 	trace_xdp_redirect(dev, fwd, xdp_prog, XDP_REDIRECT);
 
-	return __bpf_tx_xdp(fwd, xdp);
+	return __bpf_tx_xdp(fwd, map, xdp, key);
 out:
 	ri->ifindex = 0;
 	ri->map = NULL;
@@ -2378,14 +2383,16 @@ out:
 int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+	struct bpf_map *map = ri->map;
 	struct bpf_prog *xdp_prog;
 	struct net_device *fwd;
 
-	if (ri->map)
-		return xdp_do_redirect_map(dev, xdp);
+	if (map)
+		return xdp_do_redirect_map(dev, map, xdp);
 
 	fwd = dev_get_by_index_rcu(dev_net(dev), ri->ifindex);
 	ri->ifindex = 0;
+	ri->map = 0;
 	if (unlikely(!fwd)) {
 		bpf_warn_invalid_xdp_redirect(ri->ifindex);
 		return -EINVAL;
@@ -2394,7 +2401,7 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp)
 	xdp_prog = rcu_dereference(dev->xdp_prog);
 	trace_xdp_redirect(dev, fwd, xdp_prog, XDP_REDIRECT);
 
-	return __bpf_tx_xdp(fwd, xdp);
+	return __bpf_tx_xdp(fwd, map, xdp, 0);
 }
 EXPORT_SYMBOL_GPL(xdp_do_redirect);
 
