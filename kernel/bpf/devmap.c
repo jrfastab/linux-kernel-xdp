@@ -121,6 +121,7 @@ static void dev_map_free(struct bpf_map *map)
 	delete_all_elements(dtab);
 	bpf_map_area_free(dtab->netdev_map);
 	free_percpu(dtab->flush_needed);
+	free_percpu(dtab->ctx);
 	kfree(dtab);
 }
 

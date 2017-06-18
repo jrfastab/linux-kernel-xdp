@@ -47,6 +47,13 @@ static void poll_stats(int interval, int ifindex)
 		int i;
 
 		sleep(interval);
+		printf("devmap: ");
+		for (i = 0; i < 100; i++) {
+			bpf_map_lookup_elem(map_fd[0], &i, &ifindex);
+			printf("%i ", ifindex);
+		}
+		printf("\n");
+
 		assert(bpf_map_lookup_elem(map_fd[1], &key, values) == 0);
 		for (i = 0; i < nr_cpus; i++)
 			sum += (values[i] - prev[i]);
@@ -93,10 +100,12 @@ int main(int ac, char **argv)
 		map_fd[0], map_fd[1], map_fd[2]);
 
 	/* populate virtual to physical port map */
-	ret = bpf_map_update_elem(map_fd[0], &key, &ifindex_out, 0);
-	if (ret) {
-		perror("bpf_update_elem");
-		goto out;
+	for (key = 0; key < 100; key++) {
+		ret = bpf_map_update_elem(map_fd[0], &key, &ifindex_out, 0);
+		if (ret) {
+			perror("bpf_update_elem");
+			goto out;
+		}
 	}
 
 	poll_stats(2, ifindex_out);

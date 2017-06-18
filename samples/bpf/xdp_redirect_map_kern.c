@@ -22,7 +22,7 @@ struct bpf_map_def SEC("maps") tx_port = {
 	.type = BPF_MAP_TYPE_DEVMAP,
 	.key_size = sizeof(int),
 	.value_size = sizeof(int),
-	.max_entries = 1,
+	.max_entries = 100,
 };
 
 struct bpf_map_def SEC("maps") rxcnt = {
@@ -67,7 +67,7 @@ int xdp_redirect_map_prog(struct xdp_md *ctx)
 		return rc;
 
 	/* constant virtual port */
-	vport = 0;
+	vport = 50;
 
 	/* count packet in global counter */
 	value = bpf_map_lookup_elem(&rxcnt, &key);
