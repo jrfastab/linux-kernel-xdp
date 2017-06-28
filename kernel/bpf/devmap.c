@@ -235,8 +235,7 @@ static void *dev_map_lookup_elem(struct bpf_map *map, void *key)
 	return ifindex ? &ifindex : NULL;
 }
 
-static void dev_map_flush_old(struct bpf_dtab *dtab,
-			      struct bpf_dtab_netdev *old_dev, int key)
+static void dev_map_flush_old(struct bpf_dtab_netdev *old_dev)
 {
 	if (old_dev->ctx && old_dev->dev->netdev_ops->ndo_xdp_flush) {
 		struct net_device *fl = old_dev->dev;
@@ -246,14 +245,24 @@ static void dev_map_flush_old(struct bpf_dtab *dtab,
 		for_each_online_cpu(cpu) {
 			void **ctx = per_cpu_ptr(old_dev->ctx, cpu);
 
-			bitmap = per_cpu_ptr(dtab->flush_needed, cpu);
-			clear_bit(key, bitmap);
+			bitmap = per_cpu_ptr(old_dev->dtab->flush_needed, cpu);
+			clear_bit(old_dev->key, bitmap);
 			if (!*ctx)
 				continue;
 
 			fl->netdev_ops->ndo_xdp_flush(old_dev->dev, *ctx);
 		}
 	}
+}
+
+static void __dev_map_entry_free(struct rcu_head *rcu) {
+		struct bpf_dtab_netdev *old_dev;
+
+		old_dev = container_of(rcu, struct bpf_dtab_netdev, rcu);
+		dev_map_flush_old(old_dev);
+		dev_put(old_dev->dev);
+		free_percpu(old_dev->ctx);
+		kfree(old_dev);
 }
 
 static int dev_map_delete_elem(struct bpf_map *map, void *key)
@@ -274,13 +283,8 @@ static int dev_map_delete_elem(struct bpf_map *map, void *key)
 	 * removing the net device in the case of dev_put equals zero.
 	 */
 	old_dev = xchg(&dtab->netdev_map[k], NULL);
-	if (old_dev) {
-		synchronize_rcu();
-		dev_map_flush_old(dtab, old_dev, k);
-		dev_put(old_dev->dev);
-		free_percpu(old_dev->ctx);
-		kfree(old_dev);
-	}
+	if (old_dev)
+		call_rcu(&old_dev->rcu, __dev_map_entry_free);
 	return 0;
 }
 
@@ -321,20 +325,18 @@ static int dev_map_update_elem(struct bpf_map *map, void *key, void *value,
 			kfree(dev);
 			return -EINVAL;
 		}
+
+		dev->key = i;
+		dev->dtab = dtab;
 	}
 
-	/* Use synchronize_rcu() here to ensure rcu critical sections
-	 * have completed. Remembering the driver side flush operation will
-	 * happen before the net device is removed.
+	/* Use call_rcu() here to ensure rcu critical sections have completed
+	 * Remembering the driver side flush operation will happen before the
+	 * net device is removed.
 	 */
 	old_dev = xchg(&dtab->netdev_map[i], dev);
-	if (old_dev) {
-		synchronize_rcu();
-		dev_map_flush_old(dtab, old_dev, i);
-		dev_put(old_dev->dev);
-		free_percpu(old_dev->ctx);
-		kfree(old_dev);
-	}
+	if (old_dev)
+		call_rcu(&old_dev->rcu, __dev_map_entry_free);
 
 	return 0;
 }
