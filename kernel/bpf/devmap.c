@@ -9,6 +9,41 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
  * General Public License for more details.
  */
+
+/* Devmaps primary use is as a backend map for XDP BPF helper call
+ * bpf_redirect_map(). Because XDP mostly concerned with performance we spent
+ * some effort to ensure the datapath with redirect maps does not use any
+ * locking. This is a quick note on the details.
+ *
+ * We have three possible paths to get into the devmap control plane bpf
+ * syscalls, bpf programs, and netdev unregister notifications. A bpf syscall
+ * will invoke an update, delete, or lookup operation. To ensure updates and
+ * deletes appear atomic from the datapath side xchg() is used to modify the
+ * netdev_map array. Then because the datapath does a lookup into the netdev_map
+ * array (read-only) from an RCU critical section we use call_rcu() to wait for
+ * an rcu grace period before free'ing the old data structures. This ensures the
+ * datapath always has a valid copy. However, the datapath does a "flush"
+ * operation that pushes any pending packets in the driver outside the RCU
+ * critical section. Each bpf_dtab_netdev tracks these pending operations using
+ * an atomic per-cpu bitmap. The bpf_dtab_netdev object will not be destroyed
+ * until all bits are cleared indicating outstanding flush operations have
+ * completed.
+ *
+ * BPF syscalls may race with BPF program calls on any of the update, delete
+ * or lookup operations. As noted above the xchg() operation also keep the
+ * netdev_map consistent in this case. From the devmap side BPF programs
+ * calling into these operations are the same as multiple user space threads
+ * making system calls.
+ *
+ * Finally, any of the above may race with a netdev_unregister notifier. The
+ * unregister notifier must search for net devices in the map structure that
+ * contain a reference to the net device and remove them. This is a two step
+ * process (a) dereference the bpf_dtab_netdev object in netdev_map and (b)
+ * check to see if the ifindex is the same as the net_device being removed.
+ * Unfortunately, the xchg() operations do not protect against this. To avoid
+ * potentially removing incorrect objects the dev_map_list_mutex protects
+ * conflicting netdev unregister and BPF syscall operations.
+ */
 #include <linux/bpf.h>
 #include <linux/jhash.h>
 #include <linux/filter.h>
