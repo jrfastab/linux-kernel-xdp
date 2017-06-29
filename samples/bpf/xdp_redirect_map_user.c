@@ -55,6 +55,7 @@ static void poll_stats(int interval, int ifindex)
 			       ifindex, sum / interval, mapid);
 		memcpy(prev, values, sizeof(values));
 
+#if 0
 		printf("clear map\n");
 		for (i = 0; i < 100; i++) {
 			ret = bpf_map_update_elem(map_fd[0],
@@ -74,6 +75,7 @@ static void poll_stats(int interval, int ifindex)
 				perror("bpf_update_elem");
 			}
 		}
+#endif
 	}
 }
 
