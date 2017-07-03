@@ -2005,6 +2005,72 @@ int skb_splice_bits(struct sk_buff *skb, struct sock *sk, unsigned int offset,
 }
 EXPORT_SYMBOL_GPL(skb_splice_bits);
 
+/* Send skb data on a socket. */
+int skb_send_sock(struct sk_buff *skb, struct socket *sock, unsigned int offset)
+{
+	unsigned int sent = 0;
+	unsigned int ret;
+	unsigned short fragidx;
+
+	/* Deal with head data */
+	while (offset < skb_headlen(skb)) {
+		size_t len = skb_headlen(skb) - offset;
+		struct kvec kv;
+		struct msghdr msg;
+
+		kv.iov_base = skb->data + offset;
+		kv.iov_len = len;
+		memset(&msg, 0, sizeof(msg));
+
+		ret = kernel_sendmsg(sock, &msg, &kv, 1, len);
+		if (ret < 0)
+			goto error;
+
+		offset += ret;
+		sent += ret;
+	}
+
+	offset -= skb_headlen(skb);
+
+	/* Are there frags? */
+	if (!skb_shinfo(skb)->nr_frags)
+		goto out;
+
+	/* Find where we are in frag list */
+	for (fragidx = 0; fragidx < skb_shinfo(skb)->nr_frags; fragidx++) {
+		skb_frag_t *frag  = &skb_shinfo(skb)->frags[fragidx];
+
+		if (offset < frag->size)
+			break;
+
+		offset -= frag->size;
+	}
+
+	for (; fragidx < skb_shinfo(skb)->nr_frags; fragidx++) {
+		skb_frag_t *frag  = &skb_shinfo(skb)->frags[fragidx];
+
+		ret = kernel_sendpage(sock, frag->page.p,
+				      frag->page_offset + offset,
+				      frag->size - offset,
+				      MSG_DONTWAIT);
+		if (ret < 0)
+			goto error;
+
+		sent += ret;
+		offset = 0;
+	}
+
+out:
+	return sent;
+
+error:
+	if (sent)
+		return sent;
+	else
+		return ret;
+}
+EXPORT_SYMBOL_GPL(skb_send_sock);
+
 /**
  *	skb_store_bits - store bits from kernel buffer to skb
  *	@skb: destination buffer
