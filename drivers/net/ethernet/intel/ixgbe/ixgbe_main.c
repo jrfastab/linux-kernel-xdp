@@ -5799,6 +5799,18 @@ static int ixgbe_disable_macvlan(struct net_device *upper, void *data)
 	return 0;
 }
 
+void ixgbe_xdp_disable(struct ixgbe_adapter *adapter)
+{
+	int i;
+
+	for (i = 0; i < adapter->num_xdp_queues; i++) {
+		struct ixgbe_ring *ring = adapter->xdp_ring[i];
+
+		while (test_bit(__IXGBE_TX_XDP_PENDING, &ring->state))
+			msleep(1);
+	}
+}
+
 void ixgbe_down(struct ixgbe_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
@@ -5824,6 +5836,7 @@ void ixgbe_down(struct ixgbe_adapter *adapter)
 	/* call carrier off first to avoid false dev_watchdog timeouts */
 	netif_carrier_off(netdev);
 	netif_tx_disable(netdev);
+	ixgbe_xdp_disable(adapter);
 
 	/* disable any upper devices */
 	netdev_walk_all_upper_dev_rcu(adapter->netdev,
@@ -9845,9 +9858,15 @@ static int ixgbe_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
 	if (unlikely(!ring))
 		return -EINVAL;
 
+	if (unlikely(!test_bit(__IXGBE_DOWN, &adapter->state)))
+		return -EINVAL;
+
+	set_bit(__IXGBE_TX_XDP_PENDING, &ring->state);
 	err = ixgbe_xmit_xdp_ring(adapter, xdp);
-	if (err != IXGBE_XDP_TX)
+	if (err != IXGBE_XDP_TX) {
+		clear_bit(__IXGBE_TX_XDP_PENDING, &ring->state);
 		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -9856,12 +9875,6 @@ static void ixgbe_xdp_flush(struct net_device *dev)
 {
 	struct ixgbe_adapter *adapter = netdev_priv(dev);
 	struct ixgbe_ring *ring;
-
-	/* Its possible the device went down between xdp xmit and flush so
-	 * we need to ensure device is still up.
-	 */
-	if (unlikely(test_bit(__IXGBE_DOWN, &adapter->state)))
-		return;
 
 	ring = adapter->xdp_prog ? adapter->xdp_ring[smp_processor_id()] : NULL;
 	if (unlikely(!ring))
@@ -9872,8 +9885,7 @@ static void ixgbe_xdp_flush(struct net_device *dev)
 	 */
 	wmb();
 	writel(ring->next_to_use, ring->tail);
-
-	return 0;
+	clear_bit(__IXGBE_TX_XDP_PENDING, &ring->state);
 }
 
 static const struct net_device_ops ixgbe_netdev_ops = {

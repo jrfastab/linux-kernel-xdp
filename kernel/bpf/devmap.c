@@ -218,11 +218,13 @@ void __dev_map_insert_ctx(struct bpf_map *map, u32 key)
 struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 {
 	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+	struct bpf_dtab_netdev *dev;
 
 	if (key >= map->max_entries)
 		return NULL;
 
-	return dtab->netdev_map[key] ? dtab->netdev_map[key]->dev : NULL;
+	dev = READ_ONCE(dtab->netdev_map[key]);
+	return dev ? dev->dev : NULL;
 }
 
 /* __dev_map_flush is called from xdp_do_flush_map() which _must_ be signaled
