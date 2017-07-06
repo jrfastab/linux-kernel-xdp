@@ -75,11 +75,14 @@ static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
 {
 	struct kproxy_psock *psock = (struct kproxy_psock *)desc->arg.data;
 
+	printk("%s: kproxy_recv: skb->len %i offset %i len %zu\n", __func__, skb->len, offset, len);
 	WARN_ON(len != skb->len - offset);
 
 	/* Check limit of queued data */
-	if (kproxy_enqueued(psock) > psock->queue_hiwat)
+	if (kproxy_enqueued(psock) > psock->queue_hiwat) {
+		printk("%s: limit eached\n", __func__);
 		return 0;
+	}
 
 	/* Dequeue from lower socket and put skbufs on an internal queue
 	 * queue.
@@ -88,12 +91,15 @@ static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
 	/* Always clone since we're consuming whole skbuf */
 	skb = skb_clone(skb, GFP_ATOMIC);
 	if (!skb) {
+		printk("%s: clone failed\n", __func__);
 		desc->error = -ENOMEM;
 		return 0;
 	}
 
 	if (unlikely(offset)) {
 		/* Don't expect offsets to be present */
+
+		printk("%s: offset what\n", __func__);
 
 		if (!pskb_pull(skb, offset)) {
 			kfree_skb(skb);
@@ -105,6 +111,7 @@ static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
 	psock->produced += skb->len;
 	psock->stats.rx_bytes += skb->len;
 
+	printk("%s: psock queue tail: %i\n", __func__, skb->len);
 	skb_queue_tail(&psock->rxqueue, skb);
 
 	return skb->len;
@@ -116,6 +123,18 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 	struct socket *sock = psock->sock;
 	read_descriptor_t desc;
 
+	printk("%s: read sock %p:%p\n", __func__, psock, psock ? psock->peer : NULL);
+
+	if (!psock) {
+		WARN_ON(1);
+		return 0;
+	}
+
+	if (!psock->peer) {
+		WARN_ON(1);
+		return 0;
+	}
+
 	/* Check limit of queued data. If we're over then just
 	 * return. We'll be called again when the write has
 	 * consumed data to below queue_lowat.
@@ -123,16 +142,35 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 	if (kproxy_enqueued(psock) > psock->queue_hiwat)
 		return 0;
 
+	printk("kproxy enqueue\n");
+
 	desc.arg.data = psock;
 	desc.error = 0;
 	desc.count = 1; /* give more than one skb per call */
 
+	if (!sock) {
+		WARN_ON(1);
+		return 0;
+	}
+	printk("desc accounting done %p:%p:%p\n",
+		sock, sock->ops, sock->ops->read_sock);
+
+	if (!sock->ops->read_sock) {
+		WARN_ON(1);
+		return 0;
+	}
+
 	/* sk should be locked here, so okay to do read_sock */
 	sock->ops->read_sock(sock->sk, &desc, kproxy_recv);
+	printk("%s: read_sock kproxy_recv\n", __func__);
 
 	/* Probably got some data, kick writer side */
-	if (likely(!skb_queue_empty(&psock->rxqueue)))
+	if (likely(!skb_queue_empty(&psock->rxqueue))) {
+		printk("scheduled writers\n");
 		schedule_writer(psock->peer);
+	} else {
+		printk("queue empty no writers needed\n");
+	}
 
 	return desc.error;
 }
@@ -141,6 +179,8 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 static void kproxy_data_ready(struct sock *sk)
 {
 	struct kproxy_psock *psock = kproxy_psock_sk(sk);
+
+	printk("%s: data ready\n", __func__);
 
 	if (unlikely(!psock))
 		return;
@@ -158,6 +198,8 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 {
 	int started_with = psock->produced - orig_consumed;
 
+	printk("%s: wakeup\n", __func__);
+
 	/* Check if we fell below low watermark with new data that
 	 * was consumed and if so schedule receiver.
 	 */
@@ -171,6 +213,8 @@ static void kproxy_rx_work(struct work_struct *w)
 	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
 						  rx_work);
 	struct sock *sk = psock->sock->sk;
+
+	printk("%s: work\n", __func__);
 
 	lock_sock(sk);
 	if (kproxy_read_sock(psock) == -ENOMEM)
@@ -189,6 +233,7 @@ static void kproxy_tx_work(struct work_struct *w)
 	struct sk_buff *skb;
 	int orig_consumed = psock->consumed;
 
+	printk("%s: TX work\n", __func__);
 	if (unlikely(psock->tx_stopped))
 		return;
 
@@ -201,9 +246,11 @@ static void kproxy_tx_work(struct work_struct *w)
 
 	while ((skb = skb_dequeue(&psock->peer->rxqueue))) {
 		sent = 0;
+		printk("%s: skb dequeue len %i\n", __func__, skb->len);
 start:
 		do {
 			n = skb_send_sock(skb, psock->sock, sent);
+			printk("%s: skb send client socket %i:%i\n", __func__, n, sent);
 			if (n <= 0) {
 				if (n == -EAGAIN) {
 					/* Save state to try again when
@@ -238,6 +285,7 @@ start:
 		kproxy_report_deferred_error(psock->peer);
 	}
 out:
+	printk("%s: done rx wakeup\n", __func__);
 	check_for_rx_wakeup(psock, orig_consumed);
 }
 
@@ -296,9 +344,11 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 	int err = 0;
 
+	printk("%s: unjoin!\n", __func__);
 	lock_sock(sock->sk);
 
 	if (ksock->running) {
+		printk("%s: error\n", __func__);
 		err = -EALREADY;
 		goto out;
 	}
@@ -313,6 +363,7 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 
 	ksock->running = false;
 
+	printk("%s: running false\n", __func__);
 out:
 	release_sock(sock->sk);
 
@@ -326,6 +377,7 @@ static int kproxy_release(struct socket *sock)
 	struct sock *sk = sock->sk;
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 
+	printk("%s: release kproxy\n", __func__);
 	if (!sk)
 		goto out;
 
@@ -368,6 +420,7 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 {
 	struct sock *sk = psock->sock->sk;
 
+	printk("%s callbacks\n", __func__);
 	/* Set up callbacks */
 	write_lock_bh(&sk->sk_callback_lock);
 	psock->save_data_ready = sk->sk_data_ready;
@@ -388,6 +441,7 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	struct socket *csock, *ssock;
 	int err;
 
+	printk("%s %i %i\n", __func__, info->client_fd, info->server_fd);
 	csock = sockfd_lookup(info->client_fd, &err);
 	if (!csock)
 		return err;
@@ -399,6 +453,12 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	}
 
 	err = 0;
+
+	if (!csock->ops->read_sock || !ssock->ops->read_sock) {
+		fput(csock->file);
+		fput(ssock->file);
+		return -EINVAL;
+	}
 
 	lock_sock(sock->sk);
 
@@ -433,6 +493,7 @@ static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 {
 	int err;
 
+	printk("%s cmd %i\n", __func__, cmd);
 	switch (cmd) {
 	case SIOCKPROXYJOIN: {
 		struct kproxy_join info;
@@ -499,6 +560,7 @@ static int kproxy_create(struct net *net, struct socket *sock,
 	struct sock *sk;
 	struct kproxy_sock *ksock;
 
+	printk("%s\n", __func__);
 	switch (sock->type) {
 	case SOCK_DGRAM:
 		sock->ops = &kproxy_dgram_ops;
