@@ -25,7 +25,7 @@ static struct kproxy_sock *kproxy_get_first(struct seq_file *seq)
 	struct kproxy_net *knet = net_generic(net, kproxy_net_id);
 
 	return list_first_or_null_rcu(&knet->kproxy_list,
-				      struct kproxy_sock, kproxy_list);
+				      struct kproxy_sock, list);
 }
 
 static struct kproxy_sock *kproxy_get_next(struct kproxy_sock *kproxy)
@@ -34,8 +34,7 @@ static struct kproxy_sock *kproxy_get_next(struct kproxy_sock *kproxy)
 					      kproxy_net_id);
 
 	return list_next_or_null_rcu(&knet->kproxy_list,
-				     &kproxy->kproxy_list,
-				     struct kproxy_sock, kproxy_list);
+				     &kproxy->list, struct kproxy_sock, list);
 }
 
 static struct kproxy_sock *kproxy_get_idx(struct seq_file *seq, loff_t pos)
@@ -44,7 +43,7 @@ static struct kproxy_sock *kproxy_get_idx(struct seq_file *seq, loff_t pos)
 	struct kproxy_net *knet = net_generic(net, kproxy_net_id);
 	struct kproxy_sock *ksock;
 
-	list_for_each_entry_rcu(ksock, &knet->kproxy_list, kproxy_list) {
+	list_for_each_entry_rcu(ksock, &knet->kproxy_list, list) {
 		if (!pos)
 			return ksock;
 		--pos;
@@ -142,17 +141,22 @@ static void kproxy_format_addresses(struct seq_file *seq,
 static void kproxy_format_proxy(struct kproxy_sock *ksock,
 				struct seq_file *seq)
 {
-	seq_printf(seq, "%-16llu %-16llu %-10u %-16llu %-16llu %-10u",
-		   ksock->client_sock.stats.rx_bytes,
-		   ksock->server_sock.stats.tx_bytes,
-		   kproxy_enqueued(&ksock->client_sock),
-		   ksock->server_sock.stats.rx_bytes,
-		   ksock->client_sock.stats.tx_bytes,
-		   kproxy_enqueued(&ksock->server_sock));
+	struct kproxy_psock *client = ksock->client_sock;
+	struct kproxy_psock *server;
 
-	kproxy_format_addresses(seq, ksock->client_sock.sock->sk);
+	server = list_first_entry(&ksock->server_sock, struct kproxy_psock, list);
+
+	seq_printf(seq, "%-16llu %-16llu %-10u %-16llu %-16llu %-10u",
+		   client->stats.rx_bytes,
+		   server->stats.tx_bytes,
+		   kproxy_enqueued(client),
+		   server->stats.rx_bytes,
+		   client->stats.tx_bytes,
+		   kproxy_enqueued(server));
+
+	kproxy_format_addresses(seq, client->sock->sk);
 	seq_puts(seq, " ");
-	kproxy_format_addresses(seq, ksock->server_sock.sock->sk);
+	kproxy_format_addresses(seq, server->sock->sk);
 
 	seq_puts(seq, "\n");
 }

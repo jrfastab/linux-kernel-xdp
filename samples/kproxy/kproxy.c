@@ -19,8 +19,9 @@
 
 #define AF_KPROXY	44
 
-#define FRONTEND_PORT 8000
-#define BACKEND_PORT 8800
+#define FRONTEND_PORT 9000
+#define BACKEND_PORT 9800
+#define BACKEND2_PORT 9900
 
 struct kproxy_socks {
 	int server;
@@ -35,19 +36,26 @@ struct kproxy_socks {
 
 volatile int running, kproxy;
 struct kproxy_join join, unjoin;
+struct kproxy_add add;
 
 static void *client_handler(void *fd)
 {
 	struct sockaddr_in client_in;
 	struct kproxy_socks *ks;
 	char buf[82];
-	int err;
+	int err, one = 1;
 
 	ks = (struct kproxy_socks *)fd;
 
 	ks->client = socket(AF_INET, SOCK_STREAM, 0);
 	if (ks->client < 0) {
 		perror("client socket err\n");
+		return NULL;
+	}
+
+	err = setsockopt(ks->client,  SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &one, sizeof(one));
+	if (err) {
+		perror("setosckopt RESUSE failed\n");
 		return NULL;
 	}
 
@@ -165,8 +173,10 @@ int main(int argc, char **argv)
 {
 	struct kproxy_socks frontend_client = {0}, frontend_server = {0};
 	struct kproxy_socks backend_client = {0}, backend_server = {0};
+	struct kproxy_socks backend2_client = {0}, backend2_server = {0};
 	pthread_t frontend_client_t, frontend_server_t;
 	pthread_t backend_client_t, backend_server_t;
+	pthread_t backend2_client_t, backend2_server_t;
 	int err;
 
 	running = 1;
@@ -174,7 +184,7 @@ int main(int argc, char **argv)
 	/* catch SIGINT */
 	signal(SIGINT, running_handler);
 
-	/* setup frontend/backend configuration */
+	/* Configure Frontend */
 	frontend_client.name = "frontend_client";
 	frontend_client.msg = "hello frontend_client here\n";
 	frontend_client.port = FRONTEND_PORT;
@@ -187,6 +197,7 @@ int main(int argc, char **argv)
 	frontend_server.sender = false;
 	frontend_server.recv = false;
 
+	/* Configure Backend */
 	backend_client.name = "backend_client";
 	backend_client.msg = "hello backend_client here\n";
 	backend_client.port = BACKEND_PORT;
@@ -199,6 +210,19 @@ int main(int argc, char **argv)
 	backend_server.sender = false;
 	backend_server.recv = true;
 
+	/* Backend to ADD as second endpoint */
+	backend2_client.name = "backend2_client";
+	backend2_client.msg = "hello backend2_client here\n";
+	backend2_client.port = BACKEND2_PORT;
+	backend2_client.sender = false;
+	backend2_client.recv = false;
+
+	backend2_server.name = "backend2_server";
+	backend2_server.msg = "hello backend2_server here\n";
+	backend2_server.port = BACKEND2_PORT;
+	backend2_server.sender = false;
+	backend2_server.recv = true;
+
 	sleep(1);
 
 	/* setup kproxy socket */
@@ -208,13 +232,24 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	/* Create frontend */
 	pthread_create(&frontend_server_t, NULL, server_handler, &frontend_server);
-	pthread_create(&backend_server_t, NULL, server_handler, &backend_server);
+	sleep(1);
+	pthread_create(&frontend_client_t, NULL, client_handler, &frontend_client);
 
 	sleep(1);
 
-	pthread_create(&frontend_client_t, NULL, client_handler, &frontend_client);
+	/* Create backend */
+	pthread_create(&backend_server_t, NULL, server_handler, &backend_server);
+	sleep (1);
 	pthread_create(&backend_client_t, NULL, client_handler, &backend_client);
+
+	sleep(1);
+
+	/* Create backend2 */
+	pthread_create(&backend2_server_t, NULL, server_handler, &backend2_server);
+	sleep(1);
+	pthread_create(&backend2_client_t, NULL, client_handler, &backend2_client);
 
 	sleep(1);
 
@@ -229,7 +264,16 @@ int main(int argc, char **argv)
 	join.client_fd = frontend_server.accept;
 	join.server_fd = backend_client.client;
 
+	printf("join frontend and backend\n");
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
+	if (err < 0) {
+		perror("ioctl error\n");
+		return 1;
+	}
+
+	printf("add additional backend\n");
+	add.server_fd = backend2_client.client;
+	err = ioctl(kproxy, SIOCKPROXYADD, &add);
 	if (err < 0) {
 		perror("ioctl error\n");
 		return 1;
@@ -239,6 +283,8 @@ int main(int argc, char **argv)
 	pthread_join(frontend_server_t, NULL);
 	pthread_join(backend_client_t, NULL);
 	pthread_join(backend_server_t, NULL);
+	pthread_join(backend2_client_t, NULL);
+	pthread_join(backend2_server_t, NULL);
 	return 0;
 }
 

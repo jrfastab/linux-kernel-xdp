@@ -18,6 +18,7 @@
 #include <linux/skbuff.h>
 #include <linux/socket.h>
 #include <linux/workqueue.h>
+#include <linux/list.h>
 #include <net/kproxy.h>
 #include <net/netns/generic.h>
 #include <net/sock.h>
@@ -65,9 +66,12 @@ static void kproxy_state_change(struct sock *sk)
 	kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
 }
 
+static void kproxy_tx_work(struct kproxy_psock *psock);
+
 void schedule_writer(struct kproxy_psock *psock)
 {
-	schedule_work(&psock->tx_work);
+	kproxy_tx_work(psock);
+	//schedule_work(&psock->tx_work);
 }
 
 static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
@@ -121,19 +125,22 @@ static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
 static int kproxy_read_sock(struct kproxy_psock *psock)
 {
 	struct socket *sock = psock->sock;
+	struct kproxy_psock *peer;
 	read_descriptor_t desc;
 
-	printk("%s: read sock %p:%p\n", __func__, psock, psock ? psock->peer : NULL);
+	printk("%s: read sock\n", __func__);
 
 	if (!psock) {
 		WARN_ON(1);
 		return 0;
 	}
 
+#if 0
 	if (!psock->peer) {
 		WARN_ON(1);
 		return 0;
 	}
+#endif
 
 	/* Check limit of queued data. If we're over then just
 	 * return. We'll be called again when the write has
@@ -167,7 +174,8 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 	/* Probably got some data, kick writer side */
 	if (likely(!skb_queue_empty(&psock->rxqueue))) {
 		printk("scheduled writers\n");
-		schedule_writer(psock->peer);
+		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+		schedule_writer(peer);
 	} else {
 		printk("queue empty no writers needed\n");
 	}
@@ -197,6 +205,7 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 				int orig_consumed)
 {
 	int started_with = psock->produced - orig_consumed;
+	struct kproxy_psock *peer;
 
 	printk("%s: wakeup\n", __func__);
 
@@ -204,8 +213,10 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 	 * was consumed and if so schedule receiver.
 	 */
 	if (started_with > psock->queue_lowat &&
-	    kproxy_enqueued(psock) <= psock->queue_lowat)
-		schedule_work(&psock->peer->rx_work);
+	    kproxy_enqueued(psock) <= psock->queue_lowat) {
+		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+		schedule_work(&peer->rx_work);
+	}
 }
 
 static void kproxy_rx_work(struct work_struct *w)
@@ -217,25 +228,36 @@ static void kproxy_rx_work(struct work_struct *w)
 	printk("%s: work\n", __func__);
 
 	lock_sock(sk);
-	if (kproxy_read_sock(psock) == -ENOMEM)
-		schedule_work(&psock->peer->rx_work);
+	if (kproxy_read_sock(psock) == -ENOMEM) {
+		struct kproxy_psock *peer;
+
+		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+		schedule_work(&peer->rx_work);
+	}
 	release_sock(sk);
 }
 
 /* Perform TX side. This is only called from the workqueue so we
  * assume mutual exclusion.
  */
+#if 0
 static void kproxy_tx_work(struct work_struct *w)
 {
 	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
 						  tx_work);
+#endif
+static void kproxy_tx_work(struct kproxy_psock *psock)
+{
 	int sent, n;
 	struct sk_buff *skb;
 	int orig_consumed = psock->consumed;
+	struct kproxy_psock *peer;
 
 	printk("%s: TX work\n", __func__);
 	if (unlikely(psock->tx_stopped))
 		return;
+
+	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
 
 	if (psock->save_skb) {
 		skb = psock->save_skb;
@@ -244,7 +266,7 @@ static void kproxy_tx_work(struct work_struct *w)
 		goto start;
 	}
 
-	while ((skb = skb_dequeue(&psock->peer->rxqueue))) {
+	while ((skb = skb_dequeue(&peer->rxqueue))) {
 		sent = 0;
 		printk("%s: skb dequeue len %i\n", __func__, skb->len);
 start:
@@ -277,12 +299,12 @@ start:
 		} while (sent < skb->len);
 	}
 
-	if (unlikely(psock->peer->deferred_err)) {
+	if (unlikely(peer->deferred_err)) {
 		/* An error had been report on the peer and
 		 * now the queue has been drained, go ahead
 		 * and report the errot.
 		 */
-		kproxy_report_deferred_error(psock->peer);
+		kproxy_report_deferred_error(peer);
 	}
 out:
 	printk("%s: done rx wakeup\n", __func__);
@@ -299,6 +321,7 @@ static void kproxy_write_space(struct sock *sk)
 static void kproxy_stop_sock(struct kproxy_psock *psock)
 {
 	struct sock *sk = psock->sock->sk;
+	struct kproxy_psock *peer;
 
 	/* Set up callbacks */
 	write_lock_bh(&sk->sk_callback_lock);
@@ -317,15 +340,16 @@ static void kproxy_stop_sock(struct kproxy_psock *psock)
 	/* Make sure tx_stopped is committed */
 	smp_mb();
 
-	cancel_work_sync(&psock->tx_work);
+	//cancel_work_sync(&psock->tx_work);
 	/* At this point tx_work will just return if schedule, it will
 	 * not schedule rx_work.
 	 */
 
-	cancel_work_sync(&psock->peer->rx_work);
+	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+	cancel_work_sync(&peer->rx_work);
 	/* rx_work is done */
 
-	cancel_work_sync(&psock->tx_work);
+	//cancel_work_sync(&psock->tx_work);
 	/* Just in case rx_work managed to schedule a tx_work after we
 	 * set tx_stopped .
 	 */
@@ -342,6 +366,7 @@ static void kproxy_done_psock(struct kproxy_psock *psock)
 static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
+	struct kproxy_psock *server_sock, *tmp;
 	int err = 0;
 
 	printk("%s: unjoin!\n", __func__);
@@ -354,12 +379,15 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 	}
 
 	/* Stop proxy activity */
-	kproxy_stop_sock(&ksock->client_sock);
-	kproxy_stop_sock(&ksock->server_sock);
+	kproxy_stop_sock(ksock->client_sock);
+
+	list_for_each_entry_safe(server_sock, tmp, &ksock->server_sock, list)
+		kproxy_stop_sock(server_sock);
 
 	/* Done with sockets */
-	kproxy_done_psock(&ksock->client_sock);
-	kproxy_done_psock(&ksock->server_sock);
+	kproxy_done_psock(ksock->client_sock);
+	list_for_each_entry_safe(server_sock, tmp, &ksock->server_sock, list)
+		kproxy_done_psock(server_sock);
 
 	ksock->running = false;
 
@@ -391,7 +419,7 @@ static int kproxy_release(struct socket *sock)
 	}
 
 	mutex_lock(&knet->mutex);
-	list_del_rcu(&ksock->kproxy_list);
+	list_del_rcu(&ksock->list);
 	knet->count--;
 	mutex_unlock(&knet->mutex);
 
@@ -408,10 +436,10 @@ static void kproxy_init_sock(struct kproxy_psock *psock,
 {
 	skb_queue_head_init(&psock->rxqueue);
 	psock->sock = sock;
-	psock->peer = peer;
+	list_add_rcu(&peer->list, &psock->peer);
 	psock->queue_hiwat = 1000000;
 	psock->queue_lowat = 1000000;
-	INIT_WORK(&psock->tx_work, kproxy_tx_work);
+	//INIT_WORK(&psock->tx_work, kproxy_tx_work);
 	INIT_WORK(&psock->rx_work, kproxy_rx_work);
 	sock_hold(sock->sk);
 }
@@ -439,6 +467,7 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 	struct socket *csock, *ssock;
+	struct kproxy_psock *client_sock, *server_sock;
 	int err;
 
 	printk("%s %i %i\n", __func__, info->client_fd, info->server_fd);
@@ -452,13 +481,24 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		return err;
 	}
 
-	err = 0;
+	err = -EINVAL;
 
-	if (!csock->ops->read_sock || !ssock->ops->read_sock) {
-		fput(csock->file);
-		fput(ssock->file);
-		return -EINVAL;
+	if (!csock->ops->read_sock || !ssock->ops->read_sock)
+		goto outerr_early;
+
+	err = -ENOMEM;
+	client_sock = kmalloc(sizeof(*client_sock), GFP_KERNEL);
+	if (!client_sock)
+		goto outerr_early;
+
+	server_sock = kmalloc(sizeof(*server_sock), GFP_KERNEL);
+	if (!server_sock) {
+		kfree(client_sock);
+		goto outerr_early;
 	}
+
+	INIT_LIST_HEAD_RCU(&server_sock->peer);
+	INIT_LIST_HEAD_RCU(&client_sock->peer);
 
 	lock_sock(sock->sk);
 
@@ -467,14 +507,17 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		goto outerr;
 	}
 
-	kproxy_init_sock(&ksock->client_sock, csock,
-			 &ksock->server_sock);
-	kproxy_init_sock(&ksock->server_sock, ssock,
-			 &ksock->client_sock);
+	/* Insert initial client */
+	kproxy_init_sock(client_sock, csock, server_sock);
+	ksock->client_sock = client_sock;
 
-	kproxy_start_sock(&ksock->client_sock);
-	kproxy_start_sock(&ksock->server_sock);
+	/* Insert initial peer */
+	kproxy_init_sock(server_sock, ssock, client_sock);
+	list_add_rcu(&server_sock->list, &ksock->server_sock);
 
+	/* Start a 1:1 proxy server_sock <-> client_proxy */
+	kproxy_start_sock(client_sock);
+	kproxy_start_sock(server_sock);
 	ksock->running = true;
 
 	release_sock(sock->sk);
@@ -482,9 +525,64 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 
 outerr:
 	release_sock(sock->sk);
+	kfree(client_sock);
+	kfree(server_sock);
+outerr_early:
 	fput(csock->file);
 	fput(ssock->file);
 
+	return err;
+}
+
+/* kproxy_add will add another peer to the list of possible endpoints
+ * that a client may choose. Useful for load balncing amongst sockets.
+ */
+static int kproxy_add(struct socket *sock, struct kproxy_add *info)
+{
+	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
+	struct kproxy_psock *server_sock;
+	struct socket *ssock;
+	int err;
+
+	printk("%s add fd %i\n", __func__, info->server_fd);
+
+	ssock = sockfd_lookup(info->server_fd, &err);
+	if (!ssock)
+		return err;
+
+	err = 0;
+
+	if (!ssock->ops->read_sock) {
+		fput(ssock->file);
+		return -EINVAL;
+	}
+
+	server_sock = kmalloc(sizeof(*server_sock), GFP_KERNEL);
+	if (!server_sock) {
+		fput(ssock->file);
+		return -ENOMEM;
+	}
+
+	INIT_LIST_HEAD_RCU(&server_sock->peer);
+
+	lock_sock(sock->sk);
+
+	if (!ksock->running) {
+		err = -EALREADY;
+		goto outerr;
+	}
+
+	kproxy_init_sock(server_sock, ssock, ksock->client_sock);
+	kproxy_start_sock(server_sock);
+	list_add_tail_rcu(&server_sock->list, &ksock->client_sock->peer);
+
+	release_sock(sock->sk);
+
+	return 0;
+outerr:
+	release_sock(sock->sk);
+	fput(ssock->file);
+	kfree(server_sock);
 	return err;
 }
 
@@ -513,6 +611,17 @@ static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 			return -EFAULT;
 
 		err = kproxy_unjoin(sock, &info);
+
+		break;
+	}
+
+	case SIOCKPROXYADD: {
+		struct kproxy_add info;
+
+		if (copy_from_user(&info, (void __user *)arg, sizeof(info)))
+			return -EFAULT;
+
+		err = kproxy_add(sock, &info);
 
 		break;
 	}
@@ -576,9 +685,10 @@ static int kproxy_create(struct net *net, struct socket *sock,
 	sock_init_data(sock, sk);
 
 	ksock = kproxy_sk(sk);
+	INIT_LIST_HEAD_RCU(&ksock->server_sock);
 
 	mutex_lock(&knet->mutex);
-	list_add_rcu(&ksock->kproxy_list, &knet->kproxy_list);
+	list_add_rcu(&ksock->list, &knet->kproxy_list);
 	knet->count++;
 	mutex_unlock(&knet->mutex);
 

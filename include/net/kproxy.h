@@ -29,6 +29,8 @@ struct kproxy_psock {
 	unsigned int produced;
 	unsigned int consumed;
 
+	struct list_head list;
+
 	struct kproxy_stats stats;
 
 	int save_sent;
@@ -38,7 +40,7 @@ struct kproxy_psock {
 	int deferred_err;
 
 	struct socket *sock;
-	struct kproxy_psock *peer;
+	struct list_head peer;
 	struct work_struct tx_work;
 	struct work_struct rx_work;
 
@@ -52,10 +54,10 @@ struct kproxy_sock {
 
 	u32 running : 1;
 
-	struct list_head kproxy_list;
+	struct list_head list;
 
-	struct kproxy_psock client_sock;
-	struct kproxy_psock server_sock;
+	struct kproxy_psock *client_sock;
+	struct list_head server_sock;
 };
 
 struct kproxy_net {
@@ -66,7 +68,10 @@ struct kproxy_net {
 
 static inline unsigned int kproxy_enqueued(struct kproxy_psock *psock)
 {
-		return psock->produced - psock->peer->consumed;
+	struct kproxy_psock *peer;
+
+	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+	return psock->produced - peer->consumed;
 }
 
 #ifdef CONFIG_PROC_FS
