@@ -58,6 +58,8 @@ struct kproxy_sock {
 
 	struct kproxy_psock *client_sock;
 	struct list_head server_sock;
+
+	struct bpf_prog *bpf_mux;
 };
 
 struct kproxy_net {

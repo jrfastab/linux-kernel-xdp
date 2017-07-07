@@ -20,6 +20,7 @@ struct kproxy_add {
 struct kproxy_join {
 	int client_fd;
 	int server_fd;
+	int bpf_fd_mux;
 };
 
 struct kproxy_unjoin {

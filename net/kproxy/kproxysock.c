@@ -19,6 +19,7 @@
 #include <linux/socket.h>
 #include <linux/workqueue.h>
 #include <linux/list.h>
+#include <linux/bpf.h>
 #include <net/kproxy.h>
 #include <net/netns/generic.h>
 #include <net/sock.h>
@@ -121,11 +122,23 @@ static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
 	return skb->len;
 }
 
+static int kproxy_tx_writer(struct kproxy_psock *psock)
+{
+	struct kproxy_psock *peer;
+	//struct bpf_prog *prog = psock->bpf_mux;
+
+	// (*prog->bpf_func)(skb, prog->insnsi);
+
+	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+	schedule_writer(peer);
+
+	return 0;
+}
+
 /* Called with lock held on lower socket */
 static int kproxy_read_sock(struct kproxy_psock *psock)
 {
 	struct socket *sock = psock->sock;
-	struct kproxy_psock *peer;
 	read_descriptor_t desc;
 
 	printk("%s: read sock\n", __func__);
@@ -174,8 +187,7 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 	/* Probably got some data, kick writer side */
 	if (likely(!skb_queue_empty(&psock->rxqueue))) {
 		printk("scheduled writers\n");
-		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
-		schedule_writer(peer);
+		kproxy_tx_writer(psock);
 	} else {
 		printk("queue empty no writers needed\n");
 	}
@@ -205,7 +217,6 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 				int orig_consumed)
 {
 	int started_with = psock->produced - orig_consumed;
-	struct kproxy_psock *peer;
 
 	printk("%s: wakeup\n", __func__);
 
@@ -213,10 +224,8 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 	 * was consumed and if so schedule receiver.
 	 */
 	if (started_with > psock->queue_lowat &&
-	    kproxy_enqueued(psock) <= psock->queue_lowat) {
-		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
-		schedule_work(&peer->rx_work);
-	}
+	    kproxy_enqueued(psock) <= psock->queue_lowat)
+		kproxy_tx_writer(psock);
 }
 
 static void kproxy_rx_work(struct work_struct *w)
@@ -228,12 +237,8 @@ static void kproxy_rx_work(struct work_struct *w)
 	printk("%s: work\n", __func__);
 
 	lock_sock(sk);
-	if (kproxy_read_sock(psock) == -ENOMEM) {
-		struct kproxy_psock *peer;
-
-		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
-		schedule_work(&peer->rx_work);
-	}
+	if (kproxy_read_sock(psock) == -ENOMEM)
+		kproxy_tx_writer(psock);
 	release_sock(sk);
 }
 
@@ -389,7 +394,14 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 	list_for_each_entry_safe(server_sock, tmp, &ksock->server_sock, list)
 		kproxy_done_psock(server_sock);
 
+	/* TBD return memory */
+
+	/* Stop ksock */
 	ksock->running = false;
+
+	/* Releae BPF program if it exists */
+	if (ksock->bpf_mux)
+		bpf_prog_put(ksock->bpf_mux);
 
 	printk("%s: running false\n", __func__);
 out:
@@ -471,6 +483,15 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	int err;
 
 	printk("%s %i %i\n", __func__, info->client_fd, info->server_fd);
+	if (info->bpf_fd_mux) {
+		struct bpf_prog *prog;
+
+		prog = bpf_prog_get_type(info->bpf_fd_mux, BPF_PROG_TYPE_SOCKET_FILTER);
+		if (IS_ERR(prog))
+			return PTR_ERR(prog);
+		ksock->bpf_mux = prog;
+	}
+
 	csock = sockfd_lookup(info->client_fd, &err);
 	if (!csock)
 		return err;
@@ -478,6 +499,8 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	ssock = sockfd_lookup(info->server_fd, &err);
 	if (!ssock) {
 		fput(csock->file);
+		if (ksock->bpf_mux)
+			bpf_prog_put(ksock->bpf_mux);
 		return err;
 	}
 
@@ -528,6 +551,8 @@ outerr:
 	kfree(client_sock);
 	kfree(server_sock);
 outerr_early:
+	if (ksock->bpf_mux)
+		bpf_prog_put(ksock->bpf_mux);
 	fput(csock->file);
 	fput(ssock->file);
 
