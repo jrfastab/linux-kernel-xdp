@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -11,7 +12,14 @@
 #include <signal.h>
 
 #include <linux/kproxy.h>
+#include <linux/bpf.h>
+#include <linux/if_link.h>
+#include <assert.h>
+#include <libgen.h>
 
+#include "../bpf/bpf_load.h"
+#include "../bpf/bpf_util.h"
+#include "../bpf/libbpf.h"
 
 #ifndef AF_KCM
 #define AF_KCM		41	/* Kernel Connection Multiplexor*/
@@ -169,6 +177,11 @@ static void *server_handler(void *fd)
 
 void running_handler(int a);
 
+static void usage(const char *prog)
+{
+	fprintf(stderr, "usage: %s\n\n", prog);
+}
+
 int main(int argc, char **argv)
 {
 	struct kproxy_socks frontend_client = {0}, frontend_server = {0};
@@ -178,6 +191,20 @@ int main(int argc, char **argv)
 	pthread_t backend_client_t, backend_server_t;
 	pthread_t backend2_client_t, backend2_server_t;
 	int err;
+	char filename[256];
+
+	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
+
+	if (load_bpf_file(filename)) {
+		printf("load_bpf_file: %s\n", strerror(errno));
+		return 1;
+	}
+
+	if (!prog_fd[0]) {
+		usage(argv[0]);
+		printf("load_bpf_file prog_fd: %s\n", strerror(errno));
+		return 1;
+	}
 
 	running = 1;
 
@@ -263,6 +290,8 @@ int main(int argc, char **argv)
 	     
 	join.client_fd = frontend_server.accept;
 	join.server_fd = backend_client.client;
+	join.bpf_fd_parse_client = prog_fd[0];
+	join.bpf_fd_parse_server = prog_fd[0];
 
 	printf("join frontend and backend\n");
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
