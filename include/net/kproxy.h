@@ -13,6 +13,7 @@
 
 #include <linux/skbuff.h>
 #include <net/sock.h>
+#include <net/strparser.h>
 #include <uapi/linux/kproxy.h>
 
 extern unsigned int kproxy_net_id;
@@ -43,6 +44,9 @@ struct kproxy_psock {
 	struct list_head peer;
 	struct work_struct tx_work;
 	struct work_struct rx_work;
+
+	struct strparser strp;
+	struct bpf_prog *bpf_prog;
 
 	void (*save_data_ready)(struct sock *sk);
 	void (*save_write_space)(struct sock *sk);

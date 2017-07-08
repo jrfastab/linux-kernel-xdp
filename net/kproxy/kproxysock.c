@@ -20,6 +20,7 @@
 #include <linux/workqueue.h>
 #include <linux/list.h>
 #include <linux/bpf.h>
+#include <net/strparser.h>
 #include <net/kproxy.h>
 #include <net/netns/generic.h>
 #include <net/sock.h>
@@ -135,9 +136,10 @@ static int kproxy_tx_writer(struct kproxy_psock *psock)
 	return 0;
 }
 
-/* Called with lock held on lower socket */
-static int kproxy_read_sock(struct kproxy_psock *psock)
+static void kproxy_read_sock_strparser(struct strparser *strp,
+				       struct sk_buff *skb)
 {
+	struct kproxy_psock *psock = container_of(strp, struct kproxy_psock, strp);
 	struct socket *sock = psock->sock;
 	read_descriptor_t desc;
 
@@ -145,7 +147,7 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 
 	if (!psock) {
 		WARN_ON(1);
-		return 0;
+		return;
 	}
 
 #if 0
@@ -159,8 +161,16 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 	 * return. We'll be called again when the write has
 	 * consumed data to below queue_lowat.
 	 */
-	if (kproxy_enqueued(psock) > psock->queue_hiwat)
-		return 0;
+	if (kproxy_enqueued(psock) > psock->queue_hiwat) {
+		struct kproxy_psock *peer;
+
+		peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
+	//	return psock->produced - peer->consumed;
+		printk("%s: enqueue %u = %u - %u, queue hiwat %u\n", __func__,
+				kproxy_enqueued(psock), peer->produced, peer->consumed,
+				psock->queue_hiwat);
+		return;
+	}
 
 	printk("kproxy enqueue\n");
 
@@ -170,18 +180,21 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 
 	if (!sock) {
 		WARN_ON(1);
-		return 0;
+		return;
 	}
 	printk("desc accounting done %p:%p:%p\n",
 		sock, sock->ops, sock->ops->read_sock);
 
 	if (!sock->ops->read_sock) {
 		WARN_ON(1);
-		return 0;
+		return;
 	}
 
+	kproxy_recv(&desc, skb, 0, skb->len);
+#if 0
 	/* sk should be locked here, so okay to do read_sock */
 	sock->ops->read_sock(sock->sk, &desc, kproxy_recv);
+#endif
 	printk("%s: read_sock kproxy_recv\n", __func__);
 
 	/* Probably got some data, kick writer side */
@@ -192,23 +205,25 @@ static int kproxy_read_sock(struct kproxy_psock *psock)
 		printk("queue empty no writers needed\n");
 	}
 
-	return desc.error;
+	return;
 }
 
 /* Called with lock held on socket */
 static void kproxy_data_ready(struct sock *sk)
 {
-	struct kproxy_psock *psock = kproxy_psock_sk(sk);
+	struct kproxy_psock *psock;
 
 	printk("%s: data ready\n", __func__);
 
-	if (unlikely(!psock))
-		return;
-
 	read_lock_bh(&sk->sk_callback_lock);
 
+       	psock = kproxy_psock_sk(sk);
+	if (likely(psock))
+		strp_data_ready(&psock->strp);
+#if 0
 	if (kproxy_read_sock(psock) == -ENOMEM)
 		schedule_work(&psock->rx_work);
+#endif
 
 	read_unlock_bh(&sk->sk_callback_lock);
 }
@@ -237,8 +252,10 @@ static void kproxy_rx_work(struct work_struct *w)
 	printk("%s: work\n", __func__);
 
 	lock_sock(sk);
+#if 0
 	if (kproxy_read_sock(psock) == -ENOMEM)
 		kproxy_tx_writer(psock);
+#endif
 	release_sock(sk);
 }
 
@@ -391,8 +408,11 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 
 	/* Done with sockets */
 	kproxy_done_psock(ksock->client_sock);
-	list_for_each_entry_safe(server_sock, tmp, &ksock->server_sock, list)
+	list_for_each_entry_safe(server_sock, tmp, &ksock->server_sock, list) {
 		kproxy_done_psock(server_sock);
+		bpf_prog_put(server_sock->bpf_prog);
+	}
+	bpf_prog_put(ksock->client_sock->bpf_prog);
 
 	/* TBD return memory */
 
@@ -442,10 +462,33 @@ out:
 	return 0;
 }
 
+static int kproxy_parse_func_strparser(struct strparser *strp, struct sk_buff *skb)
+{
+	struct kproxy_psock *psock = container_of(strp, struct kproxy_psock, strp);
+	struct bpf_prog *prog = psock->bpf_prog;
+
+	return (*prog->bpf_func)(skb, prog->insnsi);
+}
+
+static int kproxy_read_sock_done(struct strparser *strp, int err)
+{
+	struct kproxy_psock *psock = container_of(strp, struct kproxy_psock, strp);
+
+	return err;
+}
+
 static void kproxy_init_sock(struct kproxy_psock *psock,
 			     struct socket *sock,
 			     struct kproxy_psock *peer)
 {
+	struct strp_callbacks cb;
+	int err;
+
+	cb.rcv_msg = kproxy_read_sock_strparser;
+	cb.abort_parser = NULL;
+	cb.parse_msg = kproxy_parse_func_strparser;
+	cb.read_sock_done = kproxy_read_sock_done;
+
 	skb_queue_head_init(&psock->rxqueue);
 	psock->sock = sock;
 	list_add_rcu(&peer->list, &psock->peer);
@@ -453,6 +496,12 @@ static void kproxy_init_sock(struct kproxy_psock *psock,
 	psock->queue_lowat = 1000000;
 	//INIT_WORK(&psock->tx_work, kproxy_tx_work);
 	INIT_WORK(&psock->rx_work, kproxy_rx_work);
+	err = strp_init(&psock->strp, psock->sock->sk, &cb);
+	if (err) {
+		WARN_ON(1);
+		printk("%s: error strp_init\n", __func__);
+		return;
+	}
 	sock_hold(sock->sk);
 }
 
@@ -480,9 +529,23 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 	struct socket *csock, *ssock;
 	struct kproxy_psock *client_sock, *server_sock;
+	struct bpf_prog *client_prog, *server_prog;
 	int err;
 
 	printk("%s %i %i\n", __func__, info->client_fd, info->server_fd);
+	if (!info->bpf_fd_parse_client || !info->bpf_fd_parse_server)
+		return -EINVAL;
+
+	client_prog = bpf_prog_get_type(info->bpf_fd_parse_client, BPF_PROG_TYPE_SOCKET_FILTER);
+	if (IS_ERR(client_prog))
+		return PTR_ERR(client_prog);
+
+	server_prog = bpf_prog_get_type(info->bpf_fd_parse_server, BPF_PROG_TYPE_SOCKET_FILTER);
+	if (IS_ERR(server_prog)) {
+		bpf_prog_put(client_prog);
+		return PTR_ERR(server_prog);
+	}
+
 	if (info->bpf_fd_mux) {
 		struct bpf_prog *prog;
 
@@ -520,6 +583,12 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		goto outerr_early;
 	}
 
+	memset(client_sock, 0, sizeof(*client_sock));
+	memset(server_sock, 0, sizeof(*server_sock));
+
+	client_sock->bpf_prog = client_prog;
+	server_sock->bpf_prog = server_prog;
+
 	INIT_LIST_HEAD_RCU(&server_sock->peer);
 	INIT_LIST_HEAD_RCU(&client_sock->peer);
 
@@ -553,6 +622,8 @@ outerr:
 outerr_early:
 	if (ksock->bpf_mux)
 		bpf_prog_put(ksock->bpf_mux);
+	bpf_prog_put(client_prog);
+	bpf_prog_put(server_prog);
 	fput(csock->file);
 	fput(ssock->file);
 
@@ -588,6 +659,7 @@ static int kproxy_add(struct socket *sock, struct kproxy_add *info)
 		return -ENOMEM;
 	}
 
+	memset(server_sock, 0, sizeof(*server_sock));
 	INIT_LIST_HEAD_RCU(&server_sock->peer);
 
 	lock_sock(sock->sk);

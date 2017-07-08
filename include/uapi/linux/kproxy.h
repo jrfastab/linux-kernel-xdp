@@ -15,12 +15,15 @@
 
 struct kproxy_add {
 	int server_fd;
+	int bpf_fd_parse;
 };
 
 struct kproxy_join {
 	int client_fd;
 	int server_fd;
 	int bpf_fd_mux;
+	int bpf_fd_parse_client;
+	int bpf_fd_parse_server;
 };
 
 struct kproxy_unjoin {
