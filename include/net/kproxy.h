@@ -47,6 +47,7 @@ struct kproxy_psock {
 
 	struct strparser strp;
 	struct bpf_prog *bpf_prog;
+	struct bpf_prog *bpf_mux;
 
 	void (*save_data_ready)(struct sock *sk);
 	void (*save_write_space)(struct sock *sk);
@@ -62,8 +63,6 @@ struct kproxy_sock {
 
 	struct kproxy_psock *client_sock;
 	struct list_head server_sock;
-
-	struct bpf_prog *bpf_mux;
 };
 
 struct kproxy_net {

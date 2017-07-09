@@ -292,6 +292,7 @@ int main(int argc, char **argv)
 	join.server_fd = backend_client.client;
 	join.bpf_fd_parse_client = prog_fd[0];
 	join.bpf_fd_parse_server = prog_fd[0];
+	join.bpf_fd_mux = 0;
 
 	printf("join frontend and backend\n");
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
@@ -300,13 +301,17 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+#if 0
 	printf("add additional backend\n");
 	add.server_fd = backend2_client.client;
+	add.bpf_fd_parse_server = prog_fd[0];
+
 	err = ioctl(kproxy, SIOCKPROXYADD, &add);
 	if (err < 0) {
 		perror("ioctl error\n");
 		return 1;
 	}
+#endif
 
 	pthread_join(frontend_client_t, NULL);
 	pthread_join(frontend_server_t, NULL);

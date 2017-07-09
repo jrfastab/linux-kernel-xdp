@@ -15,7 +15,7 @@
 
 struct kproxy_add {
 	int server_fd;
-	int bpf_fd_parse;
+	int bpf_fd_parse_server;
 };
 
 struct kproxy_join {
