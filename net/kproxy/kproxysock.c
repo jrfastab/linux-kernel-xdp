@@ -72,6 +72,7 @@ static void kproxy_tx_work(struct kproxy_psock *client, struct kproxy_psock *pso
 
 void schedule_writer(struct kproxy_psock *client, struct kproxy_psock *psock)
 {
+	/* TBD a worker thread or not? */
 	kproxy_tx_work(client, psock);
 	//schedule_work(&psock->tx_work);
 }
@@ -79,21 +80,17 @@ void schedule_writer(struct kproxy_psock *client, struct kproxy_psock *psock)
 /* Post skb to peers proxy queue */
 static int kproxy_recv(struct kproxy_psock *psock, struct sk_buff *skb, unsigned int offset, size_t len)
 {
-	printk("%s: kproxy_recv: skb->len %i offset %i len %zu\n", __func__, skb->len, offset, len);
 	WARN_ON(len != skb->len - offset);
 
 	/* Always clone since we're consuming whole skbuf */
 	skb = skb_clone(skb, GFP_ATOMIC);
 	if (!skb) {
-		printk("%s: clone failed\n", __func__);
 		kfree_skb(skb);
 		return -ENOMEM;
 	}
 
 	if (unlikely(offset)) {
 		/* Don't expect offsets to be present */
-		printk("%s: offset what\n", __func__);
-
 		if (!pskb_pull(skb, offset)) {
 			kfree_skb(skb);
 			return 0;
@@ -103,25 +100,17 @@ static int kproxy_recv(struct kproxy_psock *psock, struct sk_buff *skb, unsigned
 	psock->produced += skb->len;
 	psock->stats.rx_bytes += skb->len;
 
-	printk("%s: psock queue tail: %i\n", __func__, skb->len);
 	skb_queue_tail(&psock->rxqueue, skb);
 
 	/* Check limit of queued data */
-	if (kproxy_enqueued(psock) > psock->queue_hiwat) {
-		printk("%s: limit eached\n", __func__);
+	if (kproxy_enqueued(psock) > psock->queue_hiwat)
 		return -ENOMEM;
-	}
 
 	return 0;
 }
 
 static int kproxy_tx_writer(struct kproxy_psock *client, struct kproxy_psock *peer)
 {
-	//struct kproxy_psock *peer;
-	//struct bpf_prog *prog = psock->bpf_mux;
-
-	// (*prog->bpf_func)(skb, prog->insnsi);
-
 	schedule_writer(client, peer);
 	return 0;
 }
@@ -396,11 +385,9 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 	struct kproxy_psock *server_sock, *tmp;
 	int err = 0;
 
-	printk("%s: unjoin!\n", __func__);
 	lock_sock(sock->sk);
 
 	if (ksock->running) {
-		printk("%s: error\n", __func__);
 		err = -EALREADY;
 		goto out;
 	}
@@ -429,7 +416,7 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 		bpf_prog_put(ksock->client_sock->bpf_mux);
 
 	/* TBD return memory */
-	printk("%s: running false\n", __func__);
+	printk("%s: TBD free memory\n", __func__);
 out:
 	release_sock(sock->sk);
 
@@ -443,7 +430,6 @@ static int kproxy_release(struct socket *sock)
 	struct sock *sk = sock->sk;
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 
-	printk("%s: release kproxy\n", __func__);
 	if (!sk)
 		goto out;
 
@@ -505,7 +491,6 @@ static void kproxy_init_sock(struct kproxy_psock *psock,
 	err = strp_init(&psock->strp, psock->sock->sk, &cb);
 	if (err) {
 		WARN_ON(1);
-		printk("%s: error strp_init\n", __func__);
 		return;
 	}
 	sock_hold(sock->sk);
@@ -515,7 +500,6 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 {
 	struct sock *sk = psock->sock->sk;
 
-	printk("%s callbacks\n", __func__);
 	/* Set up callbacks */
 	write_lock_bh(&sk->sk_callback_lock);
 	psock->save_data_ready = sk->sk_data_ready;
@@ -538,7 +522,6 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	struct bpf_prog *client_prog, *server_prog, *mux_prog = NULL;
 	int err;
 
-	printk("%s %i %i\n", __func__, info->client_fd, info->server_fd);
 	if (!info->bpf_fd_parse_client || !info->bpf_fd_parse_server)
 		return -EINVAL;
 
@@ -648,8 +631,6 @@ static int kproxy_add(struct socket *sock, struct kproxy_add *info)
 	struct socket *ssock;
 	int err;
 
-	printk("%s add fd %i\n", __func__, info->server_fd);
-
 	server_prog = bpf_prog_get_type(info->bpf_fd_parse_server, BPF_PROG_TYPE_SOCKET_FILTER);
 	if (IS_ERR(server_prog))
 		return PTR_ERR(server_prog);
@@ -718,7 +699,6 @@ static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 {
 	int err;
 
-	printk("%s cmd %i\n", __func__, cmd);
 	switch (cmd) {
 	case SIOCKPROXYJOIN: {
 		struct kproxy_join info;
@@ -796,7 +776,6 @@ static int kproxy_create(struct net *net, struct socket *sock,
 	struct sock *sk;
 	struct kproxy_sock *ksock;
 
-	printk("%s\n", __func__);
 	switch (sock->type) {
 	case SOCK_DGRAM:
 		sock->ops = &kproxy_dgram_ops;
