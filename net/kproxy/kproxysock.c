@@ -123,14 +123,13 @@ static int kproxy_recv(read_descriptor_t *desc, struct sk_buff *skb,
 	return skb->len;
 }
 
-static int kproxy_tx_writer(struct kproxy_psock *psock)
+static int kproxy_tx_writer(struct kproxy_psock *peer)
 {
-	struct kproxy_psock *peer;
+	//struct kproxy_psock *peer;
 	//struct bpf_prog *prog = psock->bpf_mux;
 
 	// (*prog->bpf_func)(skb, prog->insnsi);
 
-	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
 	schedule_writer(peer);
 	return 0;
 }
@@ -175,14 +174,11 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	index = kproxy_mux_func(psock, skb);
 
 	printk("mux func decided %i\n", index);
-	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
-#if 0
-	list_for_each_entry(peer, &psock->peer, list) {
+	list_for_each_entry(peer, &psock->peer, list) { /* TBD map */
 		if (i == index)
 			break;
 		i++;
 	}
-#endif
 
 	/* Check limit of queued data. If we're over then just
 	 * return. We'll be called again when the write has
@@ -232,7 +228,7 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	/* Probably got some data, kick writer side */
 	if (likely(!skb_queue_empty(&psock->rxqueue))) {
 		printk("scheduled writers\n");
-		kproxy_tx_writer(psock);
+		kproxy_tx_writer(peer);
 	} else {
 		printk("queue empty no writers needed\n");
 	}
@@ -271,8 +267,29 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 	 * was consumed and if so schedule receiver.
 	 */
 	if (started_with > psock->queue_lowat &&
-	    kproxy_enqueued(psock) <= psock->queue_lowat)
-		kproxy_tx_writer(psock);
+	    kproxy_enqueued(psock) <= psock->queue_lowat) {
+		struct kproxy_psock *peer;
+#if 0
+		int i, index;
+
+		printk("mux func decider\n");
+		index = kproxy_mux_func(psock, skb);
+
+		printk("mux func decided %i\n", index);
+		list_for_each_entry(peer, &psock->peer, list) { /* TBD map */
+			if (i == index)
+				break;
+			i++;
+		}
+#endif
+#if 1
+		peer = list_first_entry(&psock->peer,
+					struct kproxy_psock, list);
+#endif
+		WARN_ON(!peer); // temporary for dbg reasons
+		if (likely(peer))
+			kproxy_tx_writer(peer);
+	}
 }
 
 static void kproxy_rx_work(struct work_struct *w)
@@ -300,11 +317,11 @@ static void kproxy_tx_work(struct work_struct *w)
 	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
 						  tx_work);
 #endif
-static void kproxy_tx_work(struct kproxy_psock *psock)
+static void kproxy_tx_work(struct kproxy_psock *client, struct kproxy_psock *psock)
 {
 	int sent, n;
 	struct sk_buff *skb;
-	int orig_consumed = psock->consumed;
+	int orig_consumed = psock->peer->consumed;
 	struct kproxy_psock *peer;
 
 	printk("%s: TX work\n", __func__);
@@ -348,7 +365,7 @@ start:
 				goto out;
 			}
 			sent += n;
-			psock->consumed += n;
+			psock->peer->consumed += n;
 			psock->stats.tx_bytes += n;
 		} while (sent < skb->len);
 	}

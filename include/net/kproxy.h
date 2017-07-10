@@ -73,10 +73,7 @@ struct kproxy_net {
 
 static inline unsigned int kproxy_enqueued(struct kproxy_psock *psock)
 {
-	struct kproxy_psock *peer;
-
-	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
-	return psock->produced - peer->consumed;
+	return psock->produced - psock->consumed;
 }
 
 #ifdef CONFIG_PROC_FS
