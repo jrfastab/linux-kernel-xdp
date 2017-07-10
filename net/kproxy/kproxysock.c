@@ -644,7 +644,7 @@ static int kproxy_add(struct socket *sock, struct kproxy_add *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 	struct kproxy_psock *server_sock;
-	struct bpf_prog *server_prog;
+	struct bpf_prog *server_prog, *mux_prog = NULL;
 	struct socket *ssock;
 	int err;
 
@@ -660,10 +660,19 @@ static int kproxy_add(struct socket *sock, struct kproxy_add *info)
 		return err;
 	}
 
+	if (info->bpf_fd_mux) {
+		mux_prog = bpf_prog_get_type(info->bpf_fd_mux, BPF_PROG_TYPE_SOCKET_FILTER);
+		if (IS_ERR(mux_prog)) {
+			bpf_prog_put(server_prog);
+			return PTR_ERR(mux_prog);
+		}
+	}
+
 	err = 0;
 
 	if (!ssock->ops->read_sock) {
 		bpf_prog_put(server_prog);
+		bpf_prog_put(mux_prog);
 		fput(ssock->file);
 		return -EINVAL;
 	}
@@ -671,13 +680,14 @@ static int kproxy_add(struct socket *sock, struct kproxy_add *info)
 	server_sock = kmalloc(sizeof(*server_sock), GFP_KERNEL);
 	if (!server_sock) {
 		bpf_prog_put(server_prog);
+		bpf_prog_put(mux_prog);
 		fput(ssock->file);
 		return -ENOMEM;
 	}
 
 	memset(server_sock, 0, sizeof(*server_sock));
 	server_sock->bpf_prog = server_prog;
-	server_sock->bpf_mux = NULL;
+	server_sock->bpf_mux = mux_prog;
 	INIT_LIST_HEAD_RCU(&server_sock->peer);
 
 	lock_sock(sock->sk);
@@ -696,6 +706,7 @@ static int kproxy_add(struct socket *sock, struct kproxy_add *info)
 	return 0;
 outerr:
 	bpf_prog_put(server_prog);
+	bpf_prog_put(mux_prog);
 	release_sock(sock->sk);
 	fput(ssock->file);
 	kfree(server_sock);
