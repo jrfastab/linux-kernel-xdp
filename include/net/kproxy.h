@@ -23,6 +23,15 @@ struct kproxy_stats {
 	unsigned long long rx_bytes;
 };
 
+struct kproxy_peers {
+	struct rcu_head	rcu;
+
+	u16	max_peers;
+	u16	num_peers;
+	struct bpf_prog __rcu *prog;
+	struct kproxy_psock __rcu *socks[0];
+};
+
 struct kproxy_psock {
 	struct sk_buff_head rxqueue;
 	unsigned int queue_hiwat;
@@ -41,7 +50,8 @@ struct kproxy_psock {
 	int deferred_err;
 
 	struct socket *sock;
-	struct list_head peer;
+	unsigned int num_peers;
+	struct kproxy_peers *peers;
 	struct work_struct tx_work;
 	struct work_struct rx_work;
 
