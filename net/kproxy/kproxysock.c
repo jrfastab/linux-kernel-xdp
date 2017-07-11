@@ -72,9 +72,7 @@ static void kproxy_tx_work(struct kproxy_psock *psock);
 
 void schedule_writer(struct kproxy_psock *psock)
 {
-	/* TBD kworker or run-to-completion? */
 	kproxy_tx_work(psock);
-	//schedule_work(&psock->tx_work);
 }
 
 /* Post skb to peers proxy queue */
@@ -109,7 +107,7 @@ static int kproxy_recv(struct kproxy_psock *psock, struct sk_buff *skb, unsigned
 	return 0;
 }
 
-static int kproxy_tx_writer(struct kproxy_psock *client, struct kproxy_psock *peer)
+static int kproxy_tx_writer(struct kproxy_psock *peer)
 {
 	schedule_writer(peer);
 	return 0;
@@ -132,50 +130,38 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 				       struct sk_buff *skb)
 {
 	struct kproxy_psock *psock = container_of(strp, struct kproxy_psock, strp);
-	struct socket *sock = psock->sock;
 	struct kproxy_psock *peer;
 	int err, index, i = 0;
-
-	printk("%s: read sock\n", __func__);
 
 	if (!psock) {
 		WARN_ON(1);
 		return;
 	}
 
-	printk("mux func decider\n");
 	index = kproxy_mux_func(psock, skb);
-
-	printk("mux func decided %i\n", index);
 	list_for_each_entry(peer, &psock->peer, list) { /* TBD map */
 		if (i == index)
 			break;
 		i++;
 	}
 
-	printk("kproxy enqueue\n");
-	if (!sock) {
-		WARN_ON(1);
-		return;
-	}
-	printk("desc accounting done %p:%p:%p\n",
-		sock, sock->ops, sock->ops->read_sock);
+	//WARN_ON(!sock);
 
+	/* Push a message to peers queue and pause the parser if the peer
+	 * exceedes the high water mark. Note because we must consume
+	 * the skb here even if the water mark is exceeded we push the
+	 * skb on the queue. So it is not a hard water mark in that
+	 * sense.
+	 */
 	err = kproxy_recv(peer, skb, 0, skb->len);
-	printk("%s: read_sock kproxy_recv\n", __func__);
 	if (err) {
-		/* should we pause the strp, but how would we wake it up */
+		strp_pause(&psock->strp);
 		return;
 	}
 
 	/* Probably got some data, kick writer side */
-	if (likely(!skb_queue_empty(&peer->rxqueue))) {
-		printk("scheduled writers\n");
-		kproxy_tx_writer(psock, peer);
-	} else {
-		printk("queue empty no writers needed\n");
-	}
-
+	if (likely(!skb_queue_empty(&peer->rxqueue)))
+		kproxy_tx_writer(peer);
 	return;
 }
 
@@ -184,17 +170,11 @@ static void kproxy_data_ready(struct sock *sk)
 {
 	struct kproxy_psock *psock;
 
-	printk("%s: data ready\n", __func__);
-
 	read_lock_bh(&sk->sk_callback_lock);
 
        	psock = kproxy_psock_sk(sk);
 	if (likely(psock))
 		strp_data_ready(&psock->strp);
-#if 0
-	if (kproxy_read_sock(psock) == -ENOMEM)
-		schedule_work(&psock->rx_work);
-#endif
 
 	read_unlock_bh(&sk->sk_callback_lock);
 }
@@ -204,37 +184,21 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 {
 	int started_with = psock->produced - orig_consumed;
 
-	printk("%s: wakeup\n", __func__);
-
 	/* Check if we fell below low watermark with new data that
-	 * was consumed and if so schedule receiver.
+	 * was consumed and if we have any paused peers unpause them.
 	 */
 	if (started_with > psock->queue_lowat &&
 	    kproxy_enqueued(psock) <= psock->queue_lowat) {
 		struct kproxy_psock *peer;
-#if 0
-		int i, index;
 
-		printk("mux func decider\n");
-		index = kproxy_mux_func(psock, skb);
-
-		printk("mux func decided %i\n", index);
-		list_for_each_entry(peer, &psock->peer, list) { /* TBD map */
-			if (i == index)
-				break;
-			i++;
+		list_for_each_entry(peer, &psock->peer, list) {
+			if (peer->strp.rx_paused)
+				strp_unpause(&peer->strp);
 		}
-#endif
-#if 1
-		peer = list_first_entry(&psock->peer,
-					struct kproxy_psock, list);
-#endif
-		WARN_ON(!peer); // temporary for dbg reasons
-		if (likely(peer))
-			kproxy_tx_writer(psock, peer);
 	}
 }
 
+#if 0
 static void kproxy_rx_work(struct work_struct *w)
 {
 	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
@@ -244,12 +208,11 @@ static void kproxy_rx_work(struct work_struct *w)
 	printk("%s: work\n", __func__);
 
 	lock_sock(sk);
-#if 0
 	if (kproxy_read_sock(psock) == -ENOMEM)
 		kproxy_tx_writer(psock);
-#endif
 	release_sock(sk);
 }
+#endif
 
 /* Perform TX side. This is only called from the workqueue so we
  * assume mutual exclusion.
@@ -266,7 +229,6 @@ static void kproxy_tx_work(struct kproxy_psock *psock)
 	struct sk_buff *skb;
 	int orig_consumed;
 
-	printk("%s: TX work\n", __func__);
 	if (unlikely(psock->tx_stopped))
 		return;
 
@@ -333,7 +295,6 @@ static void kproxy_write_space(struct sock *sk)
 static void kproxy_stop_sock(struct kproxy_psock *psock)
 {
 	struct sock *sk = psock->sock->sk;
-	struct kproxy_psock *peer;
 
 	/* Set up callbacks */
 	write_lock_bh(&sk->sk_callback_lock);
@@ -346,16 +307,16 @@ static void kproxy_stop_sock(struct kproxy_psock *psock)
 	/* Shut down the workers. Sequence is important because
 	 * RX and TX can schedule on another.
 	 */
-
 	psock->tx_stopped = 1;
 
 	/* Make sure tx_stopped is committed */
 	smp_mb();
-
+#if 0
 	//cancel_work_sync(&psock->tx_work);
 	/* At this point tx_work will just return if schedule, it will
 	 * not schedule rx_work.
 	 */
+
 
 	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
 	cancel_work_sync(&peer->rx_work);
@@ -365,6 +326,7 @@ static void kproxy_stop_sock(struct kproxy_psock *psock)
 	/* Just in case rx_work managed to schedule a tx_work after we
 	 * set tx_stopped .
 	 */
+#endif
 }
 
 static void kproxy_done_psock(struct kproxy_psock *psock)
@@ -460,8 +422,6 @@ static int kproxy_parse_func_strparser(struct strparser *strp, struct sk_buff *s
 
 static int kproxy_read_sock_done(struct strparser *strp, int err)
 {
-	struct kproxy_psock *psock = container_of(strp, struct kproxy_psock, strp);
-
 	return err;
 }
 
@@ -483,7 +443,7 @@ static void kproxy_init_sock(struct kproxy_psock *psock,
 	psock->queue_hiwat = 1000000;
 	psock->queue_lowat = 1000000;
 	//INIT_WORK(&psock->tx_work, kproxy_tx_work);
-	INIT_WORK(&psock->rx_work, kproxy_rx_work);
+	//INIT_WORK(&psock->rx_work, kproxy_rx_work);
 	err = strp_init(&psock->strp, psock->sock->sk, &cb);
 	if (err) {
 		WARN_ON(1);
@@ -507,7 +467,7 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 	sk->sk_state_change = kproxy_state_change;
 	write_unlock_bh(&sk->sk_callback_lock);
 
-	schedule_work(&psock->rx_work);
+	//schedule_work(&psock->rx_work);
 }
 
 static int kproxy_join(struct socket *sock, struct kproxy_join *info)
@@ -521,6 +481,7 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	if (!info->bpf_fd_parse_client || !info->bpf_fd_parse_server)
 		return -EINVAL;
 
+	/* Inialize BPF programs */
 	client_prog = bpf_prog_get_type(info->bpf_fd_parse_client, BPF_PROG_TYPE_SOCKET_FILTER);
 	if (IS_ERR(client_prog))
 		return PTR_ERR(client_prog);
@@ -540,6 +501,7 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		}
 	}
 
+	/* Initialize and test socket compliance */
 	csock = sockfd_lookup(info->client_fd, &err);
 	if (!csock)
 		goto err_prog_put;
@@ -569,11 +531,13 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	memset(client_sock, 0, sizeof(*client_sock));
 	memset(server_sock, 0, sizeof(*server_sock));
 
+	/* Assign BPF programs */
 	client_sock->bpf_mux = mux_prog;
 	client_sock->bpf_prog = client_prog;
 	server_sock->bpf_prog = server_prog;
 	server_sock->bpf_mux = mux_prog;
 
+	/* Initialize data structures */
 	INIT_LIST_HEAD_RCU(&server_sock->peer);
 	INIT_LIST_HEAD_RCU(&client_sock->peer);
 
@@ -584,15 +548,15 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		goto outerr;
 	}
 
-	/* Insert initial client */
+	/* Insert initial client/peer */
 	kproxy_init_sock(client_sock, csock, server_sock);
-	ksock->client_sock = client_sock;
-
-	/* Insert initial peer */
 	kproxy_init_sock(server_sock, ssock, client_sock);
+
+	/* Bind to ksock object */
+	ksock->client_sock = client_sock;
 	list_add_rcu(&server_sock->list, &ksock->server_sock);
 
-	/* Start a 1:1 proxy server_sock <-> client_proxy */
+	/* Start the proxy */
 	kproxy_start_sock(client_sock);
 	kproxy_start_sock(server_sock);
 	ksock->running = true;
@@ -619,7 +583,7 @@ err_prog_put:
 /* kproxy_add will add another peer to the list of possible endpoints
  * that a client may choose. Useful for load balncing amongst sockets.
  */
-static int kproxy_add(struct socket *sock, struct kproxy_add *info)
+static int kproxy_add_peer(struct socket *sock, struct kproxy_add *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 	struct kproxy_psock *server_sock;
@@ -724,7 +688,7 @@ static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 		if (copy_from_user(&info, (void __user *)arg, sizeof(info)))
 			return -EFAULT;
 
-		err = kproxy_add(sock, &info);
+		err = kproxy_add_peer(sock, &info);
 
 		break;
 	}

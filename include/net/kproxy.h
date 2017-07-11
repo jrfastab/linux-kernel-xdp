@@ -60,7 +60,6 @@ struct kproxy_sock {
 	u32 running : 1;
 
 	struct list_head list;
-
 	struct kproxy_psock *client_sock;
 	struct list_head server_sock;
 };
