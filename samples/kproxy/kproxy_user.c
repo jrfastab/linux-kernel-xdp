@@ -177,10 +177,12 @@ static void *server_handler(void *fd)
 
 void running_handler(int a);
 
+#if 0
 static void usage(const char *prog)
 {
 	fprintf(stderr, "usage: %s\n\n", prog);
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -201,8 +203,7 @@ int main(int argc, char **argv)
 	}
 
 	if (!prog_fd[0]) {
-		usage(argv[0]);
-		printf("load_bpf_file prog_fd: %s\n", strerror(errno));
+		printf("load_bpf_file prog_fd[0]: %s\n", strerror(errno));
 		return 1;
 	}
 

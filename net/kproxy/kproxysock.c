@@ -68,12 +68,12 @@ static void kproxy_state_change(struct sock *sk)
 	kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
 }
 
-static void kproxy_tx_work(struct kproxy_psock *client, struct kproxy_psock *psock);
+static void kproxy_tx_work(struct kproxy_psock *psock);
 
-void schedule_writer(struct kproxy_psock *client, struct kproxy_psock *psock)
+void schedule_writer(struct kproxy_psock *psock)
 {
-	/* TBD a worker thread or not? */
-	kproxy_tx_work(client, psock);
+	/* TBD kworker or run-to-completion? */
+	kproxy_tx_work(psock);
 	//schedule_work(&psock->tx_work);
 }
 
@@ -111,7 +111,7 @@ static int kproxy_recv(struct kproxy_psock *psock, struct sk_buff *skb, unsigned
 
 static int kproxy_tx_writer(struct kproxy_psock *client, struct kproxy_psock *peer)
 {
-	schedule_writer(client, peer);
+	schedule_writer(peer);
 	return 0;
 }
 
@@ -260,7 +260,7 @@ static void kproxy_tx_work(struct work_struct *w)
 	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
 						  tx_work);
 #endif
-static void kproxy_tx_work(struct kproxy_psock *client, struct kproxy_psock *psock)
+static void kproxy_tx_work(struct kproxy_psock *psock)
 {
 	int sent, n;
 	struct sk_buff *skb;
@@ -281,11 +281,9 @@ static void kproxy_tx_work(struct kproxy_psock *client, struct kproxy_psock *pso
 
 	while ((skb = skb_dequeue(&psock->rxqueue))) {
 		sent = 0;
-		printk("%s: skb dequeue len %i\n", __func__, skb->len);
 start:
 		do {
 			n = skb_send_sock(skb, psock->sock, sent);
-			printk("%s: skb send client socket %i:%i\n", __func__, n, sent);
 			if (n <= 0) {
 				if (n == -EAGAIN) {
 					/* Save state to try again when
@@ -301,37 +299,35 @@ start:
 				 * been closed somehow. Report this
 				 * on the transport socket.
 				 */
-//				kproxy_report_sk_error(psock,
-//						       n ? -n : EPIPE, true);
+				kproxy_report_sk_error(psock,
+						       n ? -n : EPIPE, true);
 				psock->tx_stopped = 1;
 				goto out;
 			}
 			sent += n;
-			client->consumed += n;
+			psock->consumed += n;
 			psock->stats.tx_bytes += n;
 		} while (sent < skb->len);
 	}
 
-	if (unlikely(client->deferred_err)) {
-		/* An error had been report on the peer and
-		 * now the queue has been drained, go ahead
-		 * and report the errot.
+	if (unlikely(psock->deferred_err)) {
+		struct kproxy_psock *peer;
+
+		/* An error had been reported and not the queue has been
+		 * drained, go ahead and report the errout.
 		 */
-		if (client)
-			kproxy_report_deferred_error(client);
+		list_for_each_entry(peer, &psock->peer, list)
+			kproxy_report_deferred_error(peer);
 	}
 out:
-	printk("%s: done rx wakeup\n", __func__);
 	check_for_rx_wakeup(psock, orig_consumed);
 }
 
 static void kproxy_write_space(struct sock *sk)
 {
-	struct kproxy_psock *client, *psock = kproxy_psock_sk(sk);
+	struct kproxy_psock *psock = kproxy_psock_sk(sk);
 
-	/* hmm is this a good idea... */
-	list_for_each_entry(client, &psock->peer, list)
-		schedule_writer(client, psock);
+	schedule_writer(psock);
 }
 
 static void kproxy_stop_sock(struct kproxy_psock *psock)
