@@ -126,6 +126,11 @@ static int kproxy_mux_func(struct kproxy_psock *psock, struct sk_buff *skb)
 	return index;
 }
 
+static struct kproxy_psock *kproxy_get_peer(int index)
+{
+
+}
+
 static void kproxy_read_sock_strparser(struct strparser *strp,
 				       struct sk_buff *skb)
 {
@@ -133,19 +138,18 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	struct kproxy_psock *peer;
 	int err, index, i = 0;
 
-	if (!psock) {
-		WARN_ON(1);
+	index = kproxy_mux_func(psock, skb);
+	if (index < 0) {
+		kfree_skb(skb);
 		return;
 	}
 
-	index = kproxy_mux_func(psock, skb);
+	peer = kproxy_get_peer(index);
 	list_for_each_entry(peer, &psock->peer, list) { /* TBD map */
 		if (i == index)
 			break;
 		i++;
 	}
-
-	//WARN_ON(!sock);
 
 	/* Push a message to peers queue and pause the parser if the peer
 	 * exceedes the high water mark. Note because we must consume
@@ -198,31 +202,6 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 	}
 }
 
-#if 0
-static void kproxy_rx_work(struct work_struct *w)
-{
-	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
-						  rx_work);
-	struct sock *sk = psock->sock->sk;
-
-	printk("%s: work\n", __func__);
-
-	lock_sock(sk);
-	if (kproxy_read_sock(psock) == -ENOMEM)
-		kproxy_tx_writer(psock);
-	release_sock(sk);
-}
-#endif
-
-/* Perform TX side. This is only called from the workqueue so we
- * assume mutual exclusion.
- */
-#if 0
-static void kproxy_tx_work(struct work_struct *w)
-{
-	struct kproxy_psock *psock = container_of(w, struct kproxy_psock,
-						  tx_work);
-#endif
 static void kproxy_tx_work(struct kproxy_psock *psock)
 {
 	int sent, n;
@@ -311,22 +290,6 @@ static void kproxy_stop_sock(struct kproxy_psock *psock)
 
 	/* Make sure tx_stopped is committed */
 	smp_mb();
-#if 0
-	//cancel_work_sync(&psock->tx_work);
-	/* At this point tx_work will just return if schedule, it will
-	 * not schedule rx_work.
-	 */
-
-
-	peer = list_first_entry(&psock->peer, struct kproxy_psock, list);
-	cancel_work_sync(&peer->rx_work);
-	/* rx_work is done */
-
-	//cancel_work_sync(&psock->tx_work);
-	/* Just in case rx_work managed to schedule a tx_work after we
-	 * set tx_stopped .
-	 */
-#endif
 }
 
 static void kproxy_done_psock(struct kproxy_psock *psock)
@@ -442,8 +405,6 @@ static void kproxy_init_sock(struct kproxy_psock *psock,
 	list_add_rcu(&peer->list, &psock->peer);
 	psock->queue_hiwat = 1000000;
 	psock->queue_lowat = 1000000;
-	//INIT_WORK(&psock->tx_work, kproxy_tx_work);
-	//INIT_WORK(&psock->rx_work, kproxy_rx_work);
 	err = strp_init(&psock->strp, psock->sock->sk, &cb);
 	if (err) {
 		WARN_ON(1);
@@ -466,8 +427,6 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 	sk->sk_write_space = kproxy_write_space;
 	sk->sk_state_change = kproxy_state_change;
 	write_unlock_bh(&sk->sk_callback_lock);
-
-	//schedule_work(&psock->rx_work);
 }
 
 static int kproxy_join(struct socket *sock, struct kproxy_join *info)
@@ -781,9 +740,7 @@ static __net_exit void kproxy_exit_net(struct net *net)
 {
 	struct kproxy_net *knet = net_generic(net, kproxy_net_id);
 
-	/* All kProxy sockets should be closed at this point, which should mean
-	 * that all multiplexors and psocks have been destroyed.
-	 */
+	/* All kProxy sockets should be closed at this point */
 	WARN_ON(!list_empty(&knet->kproxy_list));
 }
 
