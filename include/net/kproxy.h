@@ -25,44 +25,55 @@ struct kproxy_stats {
 
 struct kproxy_peers {
 	struct rcu_head	rcu;
-
-	u16	max_peers;
-	u16	num_peers;
-	struct bpf_prog __rcu *prog;
+	u16		max_peers;
+	/* socks_index is the index of the related kproxy_psock needed
+	 * to unregister socks. Only used under kproxy_net lock.
+	 */
+	int		*socks_index;
+	/* array holding peers used in datapath with writes protected
+	 * by kproxy_net lock plus rcu grace period.
+	 */
 	struct kproxy_psock __rcu *socks[0];
 };
 
 struct kproxy_psock {
 	struct rcu_head	rcu;
 
+	/* datapath variables used under sock lock */
 	struct sk_buff_head rxqueue;
 	unsigned int queue_hiwat;
 	unsigned int queue_lowat;
 	unsigned int produced;
 	unsigned int consumed;
 
-	unsigned int refcnt;
-	int fd;
-
-	struct list_head list;
-
 	struct kproxy_stats stats;
+	struct kproxy_peers *peers;
 
+	/* datapath error path cache across tx work invocations */
 	int save_sent;
 	struct sk_buff *save_skb;
-
 	u32 tx_stopped : 1;
 	int deferred_err;
-
-	struct socket *sock;
-	unsigned int num_peers;
-	struct kproxy_peers *peers;
-	struct work_struct tx_work;
-	struct work_struct rx_work;
 
 	struct strparser strp;
 	struct bpf_prog *bpf_prog;
 	struct bpf_prog *bpf_mux;
+
+	/* refcnt is incremented/decremented for creation/deletion of peer
+	 * psocks. Only modified under krpoxy_net lock and when reaching zero
+	 * the kproxy_psock object is removed from kproxy_net and can be
+	 * destroyed after a grace period.
+	 */
+	unsigned int refcnt;
+
+	/* Back reference to the file descriptor of the sock */
+	int fd;
+	struct socket *sock;
+
+	struct list_head list;
+
+	struct work_struct tx_work;
+	struct work_struct rx_work;
 
 	void (*save_data_ready)(struct sock *sk);
 	void (*save_write_space)(struct sock *sk);
@@ -71,8 +82,6 @@ struct kproxy_psock {
 
 struct kproxy_sock {
 	struct sock sk;
-
-	u32 running : 1;
 
 	struct list_head list;
 	struct list_head server_sock;
