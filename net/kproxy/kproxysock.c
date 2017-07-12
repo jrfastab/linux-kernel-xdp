@@ -37,6 +37,12 @@ static struct kproxy_peers *kproxy_peers_alloc(unsigned int max_peers)
 	if (!peers)
 		return NULL;
 
+	peers->socks_index = kzalloc(sizeof(int) * max_peers, GFP_ATOMIC);
+	if (!peers->socks_index) {
+		kfree(peers);
+		return NULL;
+	}
+
 	peers->max_peers = max_peers;
 	return peers;
 }
@@ -51,10 +57,11 @@ static int kproxy_mux_func(struct kproxy_psock *psock, struct sk_buff *skb)
 	struct bpf_prog *prog = psock->bpf_mux;
 	int index;
 
-	if (!prog)
+	if (!prog) {
 		index = 0;
-	else
+	} else {
 		index = (*prog->bpf_func)(skb, prog->insnsi);
+	}
 		
 	return index;
 }
@@ -337,12 +344,14 @@ static void kproxy_destroy_psock(struct rcu_head *rcu)
 	kproxy_stop_sock(psock);
 	sock_put(psock->sock->sk);
 	fput(psock->sock->file);
-	//psock->sock = NULL;
 
 	bpf_prog_put(psock->bpf_prog);
 	if (psock->bpf_mux)
 		bpf_prog_put(psock->bpf_mux);
-	/* TBD memory free */
+
+	kfree(psock->peers->socks_index);
+	kfree(psock->peers);
+	kfree(psock);
 }
 
 struct kproxy_psock *kproxy_lookup_psock(struct kproxy_sock *ksock, int fd)
@@ -371,11 +380,16 @@ static int kproxy_release_proxy(struct kproxy_psock *client, int c_i,
 	old_client = rcu_dereference(client->peers->socks[c_i]);
 	old_server = rcu_dereference(server->peers->socks[s_i]);
 
-	if (old_server != client)
+	/* should have already been checked can remove .... */
+	if (old_server != client) {
+		WARN_ON(1);
 		return -EINVAL;
+	}
 
-	if (old_client != server);
+	if (old_client != server) {
+		WARN_ON(1);
 		return -EINVAL;
+	}
 
 	rcu_assign_pointer(client->peers->socks[c_i], NULL);
 	rcu_assign_pointer(server->peers->socks[s_i], NULL);
@@ -398,24 +412,39 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
 	struct kproxy_psock *client, *server;
-	int err = 0, c_i = 0, s_i = 0;
+	int err = -EINVAL, c_i = 0, s_i = 0;
+	struct kproxy_peers *cpeers;
 
 	lock_sock(sock->sk);
 
 	/* Each endpoint must exist in ksock */
 	client = kproxy_lookup_psock(ksock, info->client_fd);
 	if (!client)
-		return -EINVAL; 
+		goto out_release;
 
 	server = kproxy_lookup_psock(ksock, info->server_fd);
 	if (!server) {
 		fput(client->sock->file);
-		return err;
+		goto out_release;
 	}
 
+	cpeers = client->peers;
+	for (c_i = 0; c_i < cpeers->max_peers; c_i++) {
+		if (cpeers->socks[c_i] == server) {
+			s_i = cpeers->socks_index[c_i];
+			break;
+		}
+	}
+
+	if (c_i == cpeers->max_peers)
+		goto out;
+
 	err = kproxy_release_proxy(client, c_i, server, s_i);
+	WARN_ON(err); /* testing: warning indicates we missed a check above */
+out:
 	fput(client->sock->file);
 	fput(server->sock->file);
+out_release:
 	release_sock(sock->sk);
 
 	return err;
@@ -433,15 +462,19 @@ static int kproxy_release(struct socket *sock)
 		goto out;
 
 	sock_orphan(sk);
-
 	list_for_each_entry_safe(psock, tmp, &ksock->server_sock, list) {
 		struct kproxy_peers *peers = psock->peers; 
 		struct kproxy_psock *peer;
-		int i, err;
+		int i, err, peer_i;
 
 		for (i = 0; i < peers->max_peers; i++) {
 			peer = peers->socks[i];
-			err = kproxy_release_proxy(psock, i, peer, i);
+
+			if (!peer)
+				continue;
+
+			peer_i = peers->socks_index[i];
+			err = kproxy_release_proxy(psock, i, peer, peer_i);
 			WARN_ON(err);
 		}
 	}
@@ -528,14 +561,17 @@ static struct kproxy_psock *kproxy_init_psock(int fd,
 		return ERR_PTR(-EINVAL);
 
 	prog = bpf_prog_get_type(bpf_parse, BPF_PROG_TYPE_SOCKET_FILTER);
-	if (IS_ERR(prog))
-		return prog;
+	if (IS_ERR(prog)) {
+		err = PTR_ERR(prog);
+		return ERR_PTR(err);
+	}
 
 	if (bpf_mux) {
 		mux_prog = bpf_prog_get_type(bpf_mux, BPF_PROG_TYPE_SOCKET_FILTER);
 		if (IS_ERR(mux_prog)) {
+			err = PTR_ERR(mux_prog);
 			bpf_prog_put(prog);
-			return mux_prog;
+			return ERR_PTR(err);
 		}
 	}
 
@@ -546,7 +582,7 @@ static struct kproxy_psock *kproxy_init_psock(int fd,
 
 	memset(psock, 0, sizeof(*psock));
 	psock->fd = fd;
-	psock->refcnt = 1;
+	psock->refcnt = 0;
 	psock->bpf_mux = mux_prog;
 	psock->bpf_prog = prog;
 
@@ -584,8 +620,18 @@ static int kproxy_join_psock(struct kproxy_psock *client, int c_i,
 	old_sock_c = rcu_dereference(c->socks[c_i]);
 	old_sock_s = rcu_dereference(s->socks[s_i]);
 
+	server->refcnt++;
+	client->refcnt++;
+
 	rcu_assign_pointer(c->socks[c_i], server);
 	rcu_assign_pointer(s->socks[s_i], client);
+	c->socks_index[c_i] = s_i;
+	s->socks_index[s_i] = c_i;
+
+#ifdef DEBUG
+	printk("%s: sock %i c->socks_index[%i] = %i:%i\n", __func__, client->fd, c_i, server->fd, s_i);
+	printk("%s: sock %i s->socks_index[%i] = %i:%i\n", __func__, server->fd, s_i, client->fd, c_i);
+#endif
 
 	if (old_sock_c) {
 		old_sock_c->refcnt--;
@@ -620,7 +666,7 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 						info->bpf_fd_mux);
 	}
 
-	server_sock = kproxy_lookup_psock(ksock, info->client_fd);
+	server_sock = kproxy_lookup_psock(ksock, info->server_fd);
 	if (!server_sock) {
 		new_server = true;
 		server_sock = kproxy_init_psock(info->server_fd,
@@ -632,22 +678,25 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		return -EINVAL;
 
 	lock_sock(sock->sk);
-	err = kproxy_join_psock(client_sock, 0, server_sock, 0);
+	err = kproxy_join_psock(client_sock, info->client_index,
+				server_sock, info->server_index);
 	if (err)
-		return -EINVAL;
-
-	/* Bind to ksock object */
-	list_add_rcu(&server_sock->list, &ksock->server_sock);
-	list_add_rcu(&client_sock->list, &ksock->server_sock);
+		goto out;
 
 	/* Start the proxy */
-	if (new_client)
+	if (new_client) {
+		list_add_rcu(&client_sock->list, &ksock->server_sock);
 		kproxy_start_sock(client_sock);
-	if (new_server)
-		kproxy_start_sock(server_sock);
+	}
 
+	if (new_server) {
+		list_add_rcu(&server_sock->list, &ksock->server_sock);
+		kproxy_start_sock(server_sock);
+	}
+
+out:
 	release_sock(sock->sk);
-	return 0;
+	return err;
 }
 
 static int kproxy_ioctl(struct socket *sock, unsigned int cmd,

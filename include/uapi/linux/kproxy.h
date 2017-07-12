@@ -22,6 +22,8 @@ struct kproxy_add {
 struct kproxy_join {
 	int client_fd;
 	int server_fd;
+	int client_index;
+	int server_index;
 	int bpf_fd_mux;
 	int bpf_fd_parse_client;
 	int bpf_fd_parse_server;

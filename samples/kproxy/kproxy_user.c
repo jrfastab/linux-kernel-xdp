@@ -43,8 +43,7 @@ struct kproxy_socks {
 };
 
 volatile int running, kproxy;
-struct kproxy_join join, unjoin;
-struct kproxy_add add;
+struct kproxy_join join, add, unjoin;
 
 static void *client_handler(void *fd)
 {
@@ -291,6 +290,8 @@ int main(int argc, char **argv)
 	     
 	join.client_fd = frontend_server.accept;
 	join.server_fd = backend_client.client;
+	join.client_index = 0;
+	join.server_index = 0;
 	join.bpf_fd_parse_client = prog_fd[0];
 	join.bpf_fd_parse_server = prog_fd[0];
 	join.bpf_fd_mux = prog_fd[1];
@@ -302,18 +303,20 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-#if 0
 	printf("add additional backend\n");
+	add.client_fd = frontend_server.accept;
 	add.server_fd = backend2_client.client;
+	add.client_index = 1;
+	add.server_index = 0;
+	add.bpf_fd_parse_client = prog_fd[0];
 	add.bpf_fd_parse_server = prog_fd[0];
 	add.bpf_fd_mux = prog_fd[1];
 
-	err = ioctl(kproxy, SIOCKPROXYADD, &add);
+	err = ioctl(kproxy, SIOCKPROXYJOIN, &add);
 	if (err < 0) {
 		perror("ioctl error\n");
 		return 1;
 	}
-#endif
 
 	pthread_join(frontend_client_t, NULL);
 	pthread_join(frontend_server_t, NULL);
@@ -330,8 +333,10 @@ void running_handler(int a)
 
 	running = 0;
 
+#if 0
 	err = ioctl(kproxy, SIOCKPROXYUNJOIN, &unjoin);
 	if (err < 0)
 		perror("ioctl error unjoin\n");
+#endif
 }
 
