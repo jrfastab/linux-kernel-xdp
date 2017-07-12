@@ -33,11 +33,16 @@ struct kproxy_peers {
 };
 
 struct kproxy_psock {
+	struct rcu_head	rcu;
+
 	struct sk_buff_head rxqueue;
 	unsigned int queue_hiwat;
 	unsigned int queue_lowat;
 	unsigned int produced;
 	unsigned int consumed;
+
+	unsigned int refcnt;
+	int fd;
 
 	struct list_head list;
 
@@ -70,7 +75,6 @@ struct kproxy_sock {
 	u32 running : 1;
 
 	struct list_head list;
-	struct kproxy_psock *client_sock;
 	struct list_head server_sock;
 };
 

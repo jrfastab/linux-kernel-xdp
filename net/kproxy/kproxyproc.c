@@ -141,24 +141,19 @@ static void kproxy_format_addresses(struct seq_file *seq,
 static void kproxy_format_proxy(struct kproxy_sock *ksock,
 				struct seq_file *seq)
 {
-	struct kproxy_psock *client = ksock->client_sock;
 	struct kproxy_psock *server;
 
-	server = list_first_entry(&ksock->server_sock, struct kproxy_psock, list);
+	list_for_each_entry(server, &ksock->server_sock, list) {
+		seq_printf(seq, "%-16llu %-16llu %-10u",
+			   server->stats.tx_bytes,
+			   server->stats.rx_bytes,
+			   kproxy_enqueued(server));
 
-	seq_printf(seq, "%-16llu %-16llu %-10u %-16llu %-16llu %-10u",
-		   client->stats.rx_bytes,
-		   server->stats.tx_bytes,
-		   kproxy_enqueued(client),
-		   server->stats.rx_bytes,
-		   client->stats.tx_bytes,
-		   kproxy_enqueued(server));
+		seq_puts(seq, " ");
+		kproxy_format_addresses(seq, server->sock->sk);
 
-	kproxy_format_addresses(seq, client->sock->sk);
-	seq_puts(seq, " ");
-	kproxy_format_addresses(seq, server->sock->sk);
-
-	seq_puts(seq, "\n");
+		seq_puts(seq, "\n");
+	}
 }
 
 static int kproxy_seq_show(struct seq_file *seq, void *v)
