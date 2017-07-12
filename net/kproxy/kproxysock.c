@@ -650,87 +650,6 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	return 0;
 }
 
-#if 0
-/* kproxy_add will add another peer to the list of possible endpoints
- * that a client may choose. Useful for load balncing amongst sockets.
- */
-static int kproxy_add_peer(struct socket *sock, struct kproxy_add *info)
-{
-	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
-	struct kproxy_psock *server_sock;
-	struct bpf_prog *server_prog, *mux_prog = NULL;
-	struct socket *ssock;
-	int err;
-
-	server_prog = bpf_prog_get_type(info->bpf_fd_parse_server, BPF_PROG_TYPE_SOCKET_FILTER);
-	if (IS_ERR(server_prog))
-		return PTR_ERR(server_prog);
-
-	ssock = sockfd_lookup(info->server_fd, &err);
-	if (!ssock) {
-		bpf_prog_put(server_prog);
-		return err;
-	}
-
-	if (info->bpf_fd_mux) {
-		mux_prog = bpf_prog_get_type(info->bpf_fd_mux, BPF_PROG_TYPE_SOCKET_FILTER);
-		if (IS_ERR(mux_prog)) {
-			bpf_prog_put(server_prog);
-			return PTR_ERR(mux_prog);
-		}
-	}
-
-	err = 0;
-
-	if (!ssock->ops->read_sock) {
-		bpf_prog_put(server_prog);
-		bpf_prog_put(mux_prog);
-		fput(ssock->file);
-		return -EINVAL;
-	}
-
-	server_sock = kmalloc(sizeof(*server_sock), GFP_KERNEL);
-	if (!server_sock) {
-		bpf_prog_put(server_prog);
-		bpf_prog_put(mux_prog);
-		fput(ssock->file);
-		return -ENOMEM;
-	}
-
-	memset(server_sock, 0, sizeof(*server_sock));
-	server_sock->bpf_prog = server_prog;
-	server_sock->bpf_mux = mux_prog;
-
-	server_sock->peers = kproxy_peers_alloc(KPROXY_DFLT_PEERS);
-	if (!server_sock->peers)
-		goto outerr;
-
-	lock_sock(sock->sk);
-
-	if (!ksock->running) {
-		err = -EALREADY;
-		goto outerr;
-	}
-
-	kproxy_init_sock(server_sock, ssock, ksock->client_sock);
-	kproxy_start_sock(server_sock);
-
-	kproxy_peers_add(ksock->client_sock, server_sock, 1);
-
-	release_sock(sock->sk);
-
-	return 0;
-outerr:
-	bpf_prog_put(server_prog);
-	bpf_prog_put(mux_prog);
-	release_sock(sock->sk);
-	fput(ssock->file);
-	kfree(server_sock->peers);
-	kfree(server_sock);
-	return err;
-}
-#endif
-
 static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 			unsigned long arg)
 {
@@ -758,19 +677,6 @@ static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 
 		break;
 	}
-
-#if 0
-	case SIOCKPROXYADD: {
-		struct kproxy_add info;
-
-		if (copy_from_user(&info, (void __user *)arg, sizeof(info)))
-			return -EFAULT;
-
-		err = kproxy_add_peer(sock, &info);
-
-		break;
-	}
-#endif
 
 	default:
 		err = -ENOIOCTLCMD;
