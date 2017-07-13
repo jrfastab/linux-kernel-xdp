@@ -235,9 +235,11 @@ struct security_class_mapping secclass_map[] = {
 	  { "access", NULL } },
 	{ "infiniband_endport",
 	  { "manage_subnet", NULL } },
+	{ "kproxy_socket",
+	  { COMMON_SOCK_PERMS, NULL } },
 	{ NULL }
   };
 
-#if PF_MAX > 44
+#if PF_MAX > 45
 #error New address family defined, please update secclass_map.
 #endif
