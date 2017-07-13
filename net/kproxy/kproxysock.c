@@ -2,6 +2,7 @@
  * Kernel Proxy
  *
  * Copyright (c) 2017 Tom Herbert <tom@quantonium.net>
+ * Copyright (c) 2017 John Fastabend <john.fastabend@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2
@@ -546,7 +547,8 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 }
 
 static struct kproxy_psock *kproxy_init_psock(int fd,
-					      int bpf_parse, int bpf_mux)
+					      int bpf_parse, int bpf_mux,
+					      int max_peers)
 {
 	struct bpf_prog *prog, *mux_prog;
 	struct kproxy_psock *psock;
@@ -586,9 +588,7 @@ static struct kproxy_psock *kproxy_init_psock(int fd,
 	psock->bpf_mux = mux_prog;
 	psock->bpf_prog = prog;
 
-#define KPROXY_DFLT_PEERS 5
-	psock->peers = kproxy_peers_alloc(KPROXY_DFLT_PEERS);
-
+	psock->peers = kproxy_peers_alloc(max_peers);
 	if (!psock->peers)
 		goto peers_err;
 
@@ -663,7 +663,8 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		new_client = true;
 		client_sock = kproxy_init_psock(info->client_fd,
 						info->bpf_fd_parse_client,
-						info->bpf_fd_mux);
+						info->bpf_fd_mux,
+						info->max_peers);
 	}
 
 	server_sock = kproxy_lookup_psock(ksock, info->server_fd);
@@ -671,7 +672,8 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 		new_server = true;
 		server_sock = kproxy_init_psock(info->server_fd,
 						info->bpf_fd_parse_server,
-						info->bpf_fd_mux);
+						info->bpf_fd_mux,
+						info->max_peers);
 	}
 
 	if (!client_sock || !server_sock)

@@ -24,6 +24,7 @@ struct kproxy_join {
 	int server_fd;
 	int client_index;
 	int server_index;
+	int max_peers;
 	int bpf_fd_mux;
 	int bpf_fd_parse_client;
 	int bpf_fd_parse_server;

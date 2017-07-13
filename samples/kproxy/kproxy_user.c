@@ -292,6 +292,7 @@ int main(int argc, char **argv)
 	join.server_fd = backend_client.client;
 	join.client_index = 0;
 	join.server_index = 0;
+	join.max_peers = 3;
 	join.bpf_fd_parse_client = prog_fd[0];
 	join.bpf_fd_parse_server = prog_fd[0];
 	join.bpf_fd_mux = prog_fd[1];
@@ -308,6 +309,7 @@ int main(int argc, char **argv)
 	add.server_fd = backend2_client.client;
 	add.client_index = 1;
 	add.server_index = 0;
+	add.max_peers = 3;
 	add.bpf_fd_parse_client = prog_fd[0];
 	add.bpf_fd_parse_server = prog_fd[0];
 	add.bpf_fd_mux = prog_fd[1];
