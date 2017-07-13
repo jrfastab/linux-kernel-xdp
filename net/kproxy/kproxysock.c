@@ -183,6 +183,7 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	struct kproxy_psock *peer;
 	int err;
 
+	rcu_read_lock();
 	peer = kproxy_peers_get(psock, skb);
 	if (unlikely(!peer)) {
 		kfree_skb(skb);
@@ -198,12 +199,15 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	err = kproxy_recv(peer, skb, 0, skb->len);
 	if (err) {
 		strp_pause(&psock->strp);
-		return;
+		goto out;
 	}
 
 	/* Probably got some data, kick writer side */
 	if (likely(!skb_queue_empty(&peer->rxqueue)))
 		kproxy_tx_writer(peer);
+
+out:
+	rcu_read_unlock();
 	return;
 }
 
@@ -331,6 +335,7 @@ static void kproxy_stop_sock(struct kproxy_psock *psock)
 	sk->sk_write_space = psock->save_write_space;
 	sk->sk_state_change = psock->save_state_change;
 	sk->sk_user_data = NULL;
+	strp_stop(&psock->strp);
 	write_unlock_bh(&sk->sk_callback_lock);
 
 	/* Make sure tx_stopped is committed */
@@ -341,8 +346,10 @@ static void kproxy_destroy_psock(struct rcu_head *rcu)
 {
 	struct kproxy_psock *psock = container_of(rcu, struct kproxy_psock, rcu);
 
-	__skb_queue_purge(&psock->rxqueue);
+	printk("%s: fd:%i: stop strp destroy psock rcu\n", __func__, psock->fd);
 	kproxy_stop_sock(psock);
+	__skb_queue_purge(&psock->rxqueue); /* tbd something better */
+	strp_done(&psock->strp);
 	sock_put(psock->sock->sk);
 	fput(psock->sock->file);
 
@@ -397,18 +404,20 @@ static int kproxy_release_proxy(struct kproxy_psock *client, int c_i,
 
 	old_client->refcnt--;
 	if (!old_client->refcnt) {
+		printk("old_client %i destroyed\n", old_client->fd);
 		list_del_rcu(&old_client->list);
 		call_rcu(&old_client->rcu, kproxy_destroy_psock);
 	}
 
 	old_server->refcnt--;
 	if (!old_server->refcnt) {
+		printk("old_server %i destroyed\n", old_server->fd);
 		list_del_rcu(&old_server->list);
 		call_rcu(&old_server->rcu, kproxy_destroy_psock);
 	}
 	return 0;
-
 }
+
 static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
@@ -421,13 +430,11 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 	/* Each endpoint must exist in ksock */
 	client = kproxy_lookup_psock(ksock, info->client_fd);
 	if (!client)
-		goto out_release;
+		goto out;
 
 	server = kproxy_lookup_psock(ksock, info->server_fd);
-	if (!server) {
-		fput(client->sock->file);
-		goto out_release;
-	}
+	if (!server)
+		goto out;
 
 	cpeers = client->peers;
 	for (c_i = 0; c_i < cpeers->max_peers; c_i++) {
@@ -437,17 +444,19 @@ static int kproxy_unjoin(struct socket *sock, struct kproxy_unjoin *info)
 		}
 	}
 
-	if (c_i == cpeers->max_peers)
+	if (c_i == cpeers->max_peers) {
+		WARN_ON(1);
 		goto out;
+	}
+
+	printk("%s: client %i c_i %i server %i s_i %i\n",
+		__func__, client->fd, c_i, server->fd, s_i);
 
 	err = kproxy_release_proxy(client, c_i, server, s_i);
 	WARN_ON(err); /* testing: warning indicates we missed a check above */
-out:
-	fput(client->sock->file);
-	fput(server->sock->file);
-out_release:
-	release_sock(sock->sk);
 
+out:
+	release_sock(sock->sk);
 	return err;
 }
 
@@ -475,6 +484,7 @@ static int kproxy_release(struct socket *sock)
 				continue;
 
 			peer_i = peers->socks_index[i];
+			printk("%s: psock %i i %i peer %i peer_i %i\n", __func__, psock->fd, i, peer->fd, peer_i);
 			err = kproxy_release_proxy(psock, i, peer, peer_i);
 			WARN_ON(err);
 		}
@@ -598,6 +608,7 @@ static struct kproxy_psock *kproxy_init_psock(int fd,
 peers_err:
 	kfree(psock);
 alloc_err:
+	fput(sock->file);
 	if (mux_prog)
 		bpf_prog_put(mux_prog);
 	bpf_prog_put(prog);

@@ -176,18 +176,13 @@ static void *server_handler(void *fd)
 
 void running_handler(int a);
 
-#if 0
-static void usage(const char *prog)
-{
-	fprintf(stderr, "usage: %s\n\n", prog);
-}
-#endif
+/* a bunch of global context */
+struct kproxy_socks frontend_client = {0}, frontend_server = {0};
+struct kproxy_socks backend_client = {0}, backend_server = {0};
+struct kproxy_socks backend2_client = {0}, backend2_server = {0};
 
 int main(int argc, char **argv)
 {
-	struct kproxy_socks frontend_client = {0}, frontend_server = {0};
-	struct kproxy_socks backend_client = {0}, backend_server = {0};
-	struct kproxy_socks backend2_client = {0}, backend2_server = {0};
 	pthread_t frontend_client_t, frontend_server_t;
 	pthread_t backend_client_t, backend_server_t;
 	pthread_t backend2_client_t, backend2_server_t;
@@ -333,12 +328,15 @@ void running_handler(int a)
 {
 	int err;
 
-	running = 0;
-
-#if 0
+	printf("test: unjoin server and client\n");
+	unjoin.client_fd = frontend_server.accept;
+	unjoin.server_fd = backend2_client.client;
 	err = ioctl(kproxy, SIOCKPROXYUNJOIN, &unjoin);
 	if (err < 0)
 		perror("ioctl error unjoin\n");
-#endif
+
+	printf("wait then stop threads\n");
+	sleep(2);
+	running = 0;
 }
 
