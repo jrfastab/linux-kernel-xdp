@@ -2009,7 +2009,7 @@ EXPORT_SYMBOL_GPL(skb_splice_bits);
 int skb_send_sock(struct sk_buff *skb, struct socket *sock, unsigned int offset)
 {
 	unsigned int sent = 0;
-	unsigned int ret;
+	int ret;
 	unsigned short fragidx;
 
 	/* Deal with head data */
@@ -2053,7 +2053,7 @@ int skb_send_sock(struct sk_buff *skb, struct socket *sock, unsigned int offset)
 				      frag->page_offset + offset,
 				      frag->size - offset,
 				      MSG_DONTWAIT);
-		if (ret < 0)
+		if (ret <= 0)
 			goto error;
 
 		sent += ret;

@@ -1,0 +1,10 @@
+
+config AF_KPROXY
+	tristate "Kernel proxy"
+	depends on INET
+	select BPF_SYSCALL
+	select STREAM_PARSER
+	---help---
+	  Kernel proxy implements an in kernel TCP proxy for performance.
+	  Filtering is done by BPF on incoming sockets.
+
