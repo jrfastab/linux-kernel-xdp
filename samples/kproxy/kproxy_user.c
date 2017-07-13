@@ -44,6 +44,7 @@ struct kproxy_socks {
 
 volatile int running, kproxy;
 struct kproxy_join join, add, unjoin;
+struct kproxy_attach attach;
 
 static void *client_handler(void *fd)
 {
@@ -301,15 +302,22 @@ int main(int argc, char **argv)
 	join.server_fd = backend_client.client;
 	join.client_index = 0;
 	join.server_index = 0;
-	join.max_peers = 3;
-	join.bpf_fd_parse_client = prog_fd[0];
-	join.bpf_fd_parse_server = prog_fd[0];
-	join.bpf_fd_mux = prog_fd[1];
+
+	attach.bpf_fd_parse = prog_fd[0];
+	attach.bpf_fd_mux = prog_fd[1];
+	attach.max_peers = 3;
+
+	printf("attach kproxy to bpf\n");
+	err = ioctl(kproxy, SIOCKPROXYATTACH, &attach);
+	if (err < 0) {
+		perror("attach ioctl error\n");
+		return 1;
+	}
 
 	printf("join frontend and backend\n");
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
 	if (err < 0) {
-		perror("ioctl error\n");
+		perror("join ioctl error\n");
 		return 1;
 	}
 
@@ -318,14 +326,10 @@ int main(int argc, char **argv)
 	add.server_fd = backend2_client.client;
 	add.client_index = 1;
 	add.server_index = 0;
-	add.max_peers = 3;
-	add.bpf_fd_parse_client = prog_fd[0];
-	add.bpf_fd_parse_server = prog_fd[0];
-	add.bpf_fd_mux = prog_fd[1];
 
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &add);
 	if (err < 0) {
-		perror("ioctl error\n");
+		perror("join ioctl error\n");
 		return 1;
 	}
 

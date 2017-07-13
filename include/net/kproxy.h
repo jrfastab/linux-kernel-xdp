@@ -87,6 +87,10 @@ struct kproxy_psock {
 struct kproxy_sock {
 	struct sock sk;
 
+	int bpf_fd_parse;
+	int bpf_fd_mux;
+	int max_peers;
+
 	struct list_head list;
 	struct list_head server_sock;
 };

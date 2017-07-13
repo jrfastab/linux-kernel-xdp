@@ -373,6 +373,19 @@ struct kproxy_psock *kproxy_lookup_psock(struct kproxy_sock *ksock, int fd)
 	return NULL;
 }
 
+struct kproxy_psock *kproxy_lookup_psock_by_socket(struct kproxy_sock *ksock,
+						   struct socket *sock)
+{
+	struct kproxy_psock *psock;
+
+	list_for_each_entry(psock, &ksock->server_sock, list) {
+		if (psock->sock == sock)
+			return psock;
+	}
+
+	return NULL;
+}
+
 static int kproxy_release_proxy(struct kproxy_psock *client, int c_i,
 				struct kproxy_psock *server, int s_i)
 {
@@ -551,21 +564,13 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 	write_unlock_bh(&sk->sk_callback_lock);
 }
 
-static struct kproxy_psock *kproxy_init_psock(int fd,
+static struct kproxy_psock *kproxy_init_psock(struct socket *sock,
 					      int bpf_parse, int bpf_mux,
 					      int max_peers)
 {
-	struct bpf_prog *prog, *mux_prog;
+	struct bpf_prog *prog, *mux_prog = NULL;
 	struct kproxy_psock *psock;
-	struct socket *sock;
 	int err;
-
-	sock = sockfd_lookup(fd, &err);
-	if (!sock)
-		return ERR_PTR(err);
-
-	if (!sock->ops->read_sock)
-		return ERR_PTR(-EINVAL);
 
 	prog = bpf_prog_get_type(bpf_parse, BPF_PROG_TYPE_SOCKET_FILTER);
 	if (IS_ERR(prog)) {
@@ -589,7 +594,6 @@ static struct kproxy_psock *kproxy_init_psock(int fd,
 		goto alloc_err;
 
 	memset(psock, 0, sizeof(*psock));
-	psock->fd = fd;
 	psock->refcnt = 0;
 	psock->bpf_mux = mux_prog;
 	psock->bpf_prog = prog;
@@ -660,37 +664,38 @@ static int kproxy_join_psock(struct kproxy_psock *client, int c_i,
 	return 0;
 }
 
-static int kproxy_join(struct socket *sock, struct kproxy_join *info)
+static int kproxy_join_sockets(struct socket *kproxy,
+			       struct socket *s1, int s1_index,
+			       struct socket *s2, int s2_index)
 {
-	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
+	struct kproxy_sock *ksock = kproxy_sk(kproxy->sk);
 	struct kproxy_psock *client_sock, *server_sock;
 	bool new_client = false, new_server = false;
 	int err;
 
-	client_sock = kproxy_lookup_psock(ksock, info->client_fd);
+	client_sock = kproxy_lookup_psock_by_socket(ksock, s1);
 	if (!client_sock) {
 		new_client = true;
-		client_sock = kproxy_init_psock(info->client_fd,
-						info->bpf_fd_parse_client,
-						info->bpf_fd_mux,
-						info->max_peers);
+		client_sock = kproxy_init_psock(s1,
+						ksock->bpf_fd_parse,
+						ksock->bpf_fd_mux,
+						ksock->max_peers);
 	}
 
-	server_sock = kproxy_lookup_psock(ksock, info->server_fd);
+	server_sock = kproxy_lookup_psock_by_socket(ksock, s2);
 	if (!server_sock) {
 		new_server = true;
-		server_sock = kproxy_init_psock(info->server_fd,
-						info->bpf_fd_parse_server,
-						info->bpf_fd_mux,
-						info->max_peers);
+		server_sock = kproxy_init_psock(s2,
+						ksock->bpf_fd_parse,
+						ksock->bpf_fd_mux,
+						ksock->max_peers);
 	}
 
 	if (!client_sock || !server_sock)
 		return -EINVAL;
 
-	lock_sock(sock->sk);
-	err = kproxy_join_psock(client_sock, info->client_index,
-				server_sock, info->server_index);
+	lock_sock(kproxy->sk);
+	err = kproxy_join_psock(client_sock, s1_index, server_sock, s2_index);
 	if (err)
 		goto out;
 
@@ -706,8 +711,101 @@ static int kproxy_join(struct socket *sock, struct kproxy_join *info)
 	}
 
 out:
+	release_sock(kproxy->sk);
+	return err;
+}
+
+static int kproxy_join(struct socket *sock, struct kproxy_join *info)
+{
+	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
+	struct kproxy_psock *client_psock, *server_psock;
+	struct socket *client, *server;
+	bool new_client = false, new_server = false;
+	int err;
+
+	client = sockfd_lookup(info->client_fd, &err);
+	if (!client)
+		return err;
+
+	if (!client->ops->read_sock)
+		return -EINVAL;
+
+	server = sockfd_lookup(info->server_fd, &err);
+	if (!client)
+		return err;
+
+	if (!server->ops->read_sock)
+		return -EINVAL;
+
+	client_psock = kproxy_lookup_psock_by_socket(ksock, client);
+	if (!client_psock) {
+		new_client = true;
+		client_psock = kproxy_init_psock(client,
+						ksock->bpf_fd_parse,
+						ksock->bpf_fd_mux,
+						ksock->max_peers);
+		if (!client_psock)
+			return -EINVAL;
+	} else {
+		sock_put(client_psock->sock->sk);
+		fput(client_psock->sock->file);
+	}
+
+	server_psock = kproxy_lookup_psock_by_socket(ksock, server);
+	if (!server_psock) {
+		new_server = true;
+		server_psock = kproxy_init_psock(server,
+						ksock->bpf_fd_parse,
+						ksock->bpf_fd_mux,
+						ksock->max_peers);
+		if (!server_psock) {
+			sock_put(client_psock->sock->sk);
+			fput(client_psock->sock->file);
+			return -EINVAL;
+		}
+	} else {
+		sock_put(server_psock->sock->sk);
+		fput(server_psock->sock->file);
+	}
+
+	lock_sock(sock->sk);
+	err = kproxy_join_psock(client_psock, info->client_index,
+				server_psock, info->server_index);
+	if (err)
+		goto out;
+
+	/* Start the proxy */
+	if (new_client) {
+		list_add_rcu(&client_psock->list, &ksock->server_sock);
+		kproxy_start_sock(client_psock);
+	}
+
+	if (new_server) {
+		list_add_rcu(&server_psock->list, &ksock->server_sock);
+		kproxy_start_sock(server_psock);
+	}
+
+out:
 	release_sock(sock->sk);
 	return err;
+}
+
+int kproxy_bind_bpf(struct socket *kproxy,
+		    struct socket *s1, struct socket *s2, u64 flags)
+{
+	return  kproxy_join_sockets(kproxy, s1, 0, s2, 0);
+}
+EXPORT_SYMBOL(kproxy_bind_bpf);
+
+static int kproxy_attach(struct socket *sock, struct kproxy_attach *info)
+{
+	struct kproxy_sock *ksock = kproxy_sk(sock->sk);
+
+	ksock->bpf_fd_parse = info->bpf_fd_parse;
+	ksock->bpf_fd_mux = info->bpf_fd_mux; 
+	ksock->max_peers = info->max_peers;
+
+	return 0;
 }
 
 static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
@@ -716,6 +814,17 @@ static int kproxy_ioctl(struct socket *sock, unsigned int cmd,
 	int err;
 
 	switch (cmd) {
+	case SIOCKPROXYATTACH: {
+		struct kproxy_attach info;
+
+		if (copy_from_user(&info, (void __user *)arg, sizeof(info)))
+			return -EFAULT;
+
+		err = kproxy_attach(sock, &info);
+
+		break;
+	}
+
 	case SIOCKPROXYJOIN: {
 		struct kproxy_join info;
 

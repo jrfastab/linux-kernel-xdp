@@ -385,4 +385,16 @@ void __dev_map_insert_ctx(struct bpf_map *map, u32 index);
 void __dev_map_flush(struct bpf_map *map);
 
 struct socket  *__sock_map_lookup_elem(struct bpf_map *map, u32 key);
+
+#ifdef CONFIG_AF_KPROXY
+int kproxy_bind_bpf(struct socket *kproxy,
+		    struct socket *s1, struct socket *s2, u64 flags);
+#else
+int kproxy_bind_bpf(struct socket *kproxy,
+		    struct socket *s1, struct socket *s2, u64 flags)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* KPROXY */
+
 #endif /* _LINUX_BPF_H */

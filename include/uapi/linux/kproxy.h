@@ -13,10 +13,10 @@
 #ifndef KPROXYKERNEL_H
 #define KPROXYKERNEL_H
 
-struct kproxy_add {
-	int server_fd;
+struct kproxy_attach {
+	int bpf_fd_parse;
 	int bpf_fd_mux;
-	int bpf_fd_parse_server;
+	int max_peers;
 };
 
 struct kproxy_join {
@@ -37,7 +37,7 @@ struct kproxy_unjoin {
 
 #define SIOCKPROXYJOIN		(SIOCPROTOPRIVATE + 0)
 #define SIOCKPROXYUNJOIN	(SIOCPROTOPRIVATE + 1)
-#define SIOCKPROXYADD		(SIOCPROTOPRIVATE + 2)
+#define SIOCKPROXYATTACH	(SIOCPROTOPRIVATE + 2)
 
 #endif
 
