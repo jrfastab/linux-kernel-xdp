@@ -69,6 +69,11 @@ int main(int argc, char **argv)
 		return 3;
 	}
 	cg_fd = open(cg_path, O_DIRECTORY, O_RDONLY);
+	if (cg_fd < 0) {
+		fprintf(stderr, "ERROR: (%i) open cg path failed: %s\n", cg_fd, cg_path);
+		return cg_fd;
+	}
+	fprintf(stderr, "CG_FD open %i:%s\n", cg_fd, cg_path);
 
 	if (!strcmp(prog + strlen(prog)-2, ".o"))
 		strcpy(fn, prog);
@@ -82,7 +87,7 @@ int main(int argc, char **argv)
 		return 4;
 	}
 	if (logFlag)
-		printf("TCP BPF Loaded %s\n", fn);
+		printf("TCP BPF Loaded %s %i\n", fn, prog_fd[0]);
 
 	error = bpf_prog_attach(prog_fd[0], cg_fd, BPF_CGROUP_SOCK_OPS, 0);
 	if (error) {

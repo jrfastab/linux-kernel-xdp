@@ -37,15 +37,15 @@ int bpf_rwnd(struct bpf_sock_ops *skops)
 	/* For testing purposes, only execute rest of BPF program
 	 * if neither port numberis 55601
 	 */
+#if 0
 	if (bpf_ntohl(skops->remote_port) !=
 	    55601 && skops->local_port != 55601)
 		return -1;
+#endif
 
 	op = (int) skops->op;
 
-#ifdef DEBUG
 	bpf_printk("BPF command: %d\n", op);
-#endif
 
 	/* Check for RWND_INIT operation and IPv6 addresses */
 	if (op == BPF_SOCK_OPS_RWND_INIT &&

@@ -1845,51 +1845,43 @@ static const struct bpf_func_proto bpf_redirect_map_proto = {
 	.arg3_type      = ARG_ANYTHING,
 };
 
+#if 0
 struct sk_redirect_info {
 	u32 kproxy;
 	u32 endpoint;
 	u64 flags;
 	struct bpf_map *map;
 };
+#endif
 
-static DEFINE_PER_CPU(struct sk_redirect_info, sk_redirect_info);
-
-
-int sk_do_redirect_map(struct socket *sock)
+BPF_CALL_5(bpf_sk_redirect_map,
+	   struct bpf_sock_ops_kern *, bpf_sock, 
+	   struct bpf_map *, map,
+	   int, proxy,
+	   int, endpoint,
+	   int, flags)
 {
-	struct sk_redirect_info *ri = this_cpu_ptr(&sk_redirect_info);
-	struct bpf_map *map = ri->map;
+	struct sock *sk = bpf_sock->sk;
 	struct socket *kproxy, *ep;
-	
-	kproxy = __sock_map_lookup_elem(map, ri->kproxy);
-	ep = __sock_map_lookup_elem(map, ri->endpoint);
-
-	return kproxy_bind_bpf(kproxy, sock, ep, ri->flags);
-}
-
-BPF_CALL_4(bpf_sk_redirect_map, struct bpf_map *, map, u32, kproxy, u32, endpoint, u64, flags)
-{
-	struct sk_redirect_info *ri = this_cpu_ptr(&sk_redirect_info);
 
 	if (unlikely(flags))
 		return BPF_SOCK_OPS_ABORT;
+	
+	kproxy = __sock_map_lookup_elem(map, proxy);
+	ep = __sock_map_lookup_elem(map, endpoint);
 
-	ri->map = map;
-	ri->kproxy = kproxy;
-	ri->endpoint = endpoint;
-	ri->flags = flags;
-
-	return BPF_SOCK_OPS_KPROXY_BIND;
+	return kproxy_bind_bpf(kproxy, sk->sk_socket, ep, flags);
 }
 
 static const struct bpf_func_proto bpf_sk_redirect_map_proto = {
 	.func           = bpf_sk_redirect_map,
 	.gpl_only       = false,
 	.ret_type       = RET_INTEGER,
-	.arg1_type      = ARG_CONST_MAP_PTR,
-	.arg2_type      = ARG_ANYTHING,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_CONST_MAP_PTR,
 	.arg3_type      = ARG_ANYTHING,
 	.arg4_type      = ARG_ANYTHING,
+	.arg5_type      = ARG_ANYTHING,
 };
 
 BPF_CALL_1(bpf_get_cgroup_classid, const struct sk_buff *, skb)
@@ -3137,8 +3129,6 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_socket_cookie_proto;
 	case BPF_FUNC_get_socket_uid:
 		return &bpf_get_socket_uid_proto;
-	case BPF_FUNC_sk_redirect_map:
-		return &bpf_sk_redirect_map_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}
@@ -3263,6 +3253,8 @@ static const struct bpf_func_proto *
 	switch (func_id) {
 	case BPF_FUNC_setsockopt:
 		return &bpf_setsockopt_proto;
+	case BPF_FUNC_sk_redirect_map:
+		return &bpf_sk_redirect_map_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}

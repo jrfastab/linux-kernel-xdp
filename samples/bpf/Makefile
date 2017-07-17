@@ -125,6 +125,7 @@ always += tcp_iw_kern.o
 always += tcp_clamp_kern.o
 always += xdp_redirect_kern.o
 always += xdp_redirect_map_kern.o
+always += tcp_kproxy_kern.o
 
 HOSTCFLAGS += -I$(objtree)/usr/include
 HOSTCFLAGS += -I$(srctree)/tools/lib/

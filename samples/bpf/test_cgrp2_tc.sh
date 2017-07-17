@@ -97,7 +97,8 @@ run_in_cgrp() {
 }
 
 do_test() {
-    run_in_cgrp $CGRP2_TC_LEAF "ping -6 -c3 ff02::1%$HOST_IFC >& /dev/null"
+    echo "ping6 -c3 ff02::1%$HOST_IFC"
+    run_in_cgrp $CGRP2_TC_LEAF "ping6 -v -c3 ff02::1%$HOST_IFC" # >& /dev/null"
     local dropped=$($TC -s qdisc show dev $HOST_IFC | tail -3 | \
 			   awk '/drop/{print substr($7, 0, index($7, ",")-1)}')
     if [[ $dropped -eq 0 ]]
@@ -113,6 +114,8 @@ do_test() {
 do_exit() {
     if [ "$DEBUG" == "yes" ] && [ "$MODE" != 'cleanuponly' ]
     then
+	echo "------ TC -----"
+	$TC -s qdisc show dev $HOST_IFC | tail -3 
 	echo "------ DEBUG ------"
 	echo "mount: "; mount | egrep '(cgroup2|bpf)'; echo
 	echo "$CGRP2_TC_LEAF: "; ls -l $CGRP2_TC_LEAF; echo

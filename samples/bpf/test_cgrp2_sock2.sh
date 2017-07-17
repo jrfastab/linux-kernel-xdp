@@ -22,7 +22,7 @@ function config_cgroup {
 
 
 function attach_bpf {
-	test_cgrp2_sock2 /tmp/cgroupv2/foo sock_flags_kern.o $1
+	./test_cgrp2_sock2 /tmp/cgroupv2/foo sock_flags_kern.o $1
 	[ $? -ne 0 ] && exit 1
 }
 
