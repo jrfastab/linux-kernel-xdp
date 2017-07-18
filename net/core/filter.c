@@ -1858,19 +1858,17 @@ BPF_CALL_5(bpf_sk_redirect_map,
 	   struct bpf_sock_ops_kern *, bpf_sock, 
 	   struct bpf_map *, map,
 	   int, proxy,
-	   int, endpoint,
+	   int, index,
 	   int, flags)
 {
 	struct sock *sk = bpf_sock->sk;
-	struct socket *kproxy, *ep;
+	struct socket *kproxy;
 
 	if (unlikely(flags))
 		return BPF_SOCK_OPS_ABORT;
 	
 	kproxy = __sock_map_lookup_elem(map, proxy);
-	ep = __sock_map_lookup_elem(map, endpoint);
-
-	return kproxy_bind_bpf(kproxy, sk->sk_socket, ep, flags);
+	return kproxy_bind_bpf(kproxy, sk->sk_socket, index, flags);
 }
 
 static const struct bpf_func_proto bpf_sk_redirect_map_proto = {

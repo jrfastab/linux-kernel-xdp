@@ -72,6 +72,7 @@ struct kproxy_psock {
 
 	/* Back reference to the file descriptor of the sock */
 	int fd;
+	int index;
 	struct socket *sock;
 
 	struct list_head list;
@@ -90,6 +91,9 @@ struct kproxy_sock {
 	int bpf_fd_parse;
 	int bpf_fd_mux;
 	int max_peers;
+	struct kproxy_peers *peers;
+
+	bool attached;
 
 	struct list_head list;
 	struct list_head server_sock;

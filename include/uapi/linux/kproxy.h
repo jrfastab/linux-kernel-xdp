@@ -20,19 +20,12 @@ struct kproxy_attach {
 };
 
 struct kproxy_join {
-	int client_fd;
-	int server_fd;
-	int client_index;
-	int server_index;
-	int max_peers;
-	int bpf_fd_mux;
-	int bpf_fd_parse_client;
-	int bpf_fd_parse_server;
+	int sock_fd;
+	int index;
 };
 
 struct kproxy_unjoin {
-	int client_fd;
-	int server_fd;
+	int sock_fd;
 };
 
 #define SIOCKPROXYJOIN		(SIOCPROTOPRIVATE + 0)

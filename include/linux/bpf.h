@@ -387,11 +387,9 @@ void __dev_map_flush(struct bpf_map *map);
 struct socket  *__sock_map_lookup_elem(struct bpf_map *map, u32 key);
 
 #ifdef CONFIG_AF_KPROXY
-int kproxy_bind_bpf(struct socket *kproxy,
-		    struct socket *s1, struct socket *s2, u64 flags);
+int kproxy_bind_bpf(struct socket *kproxy, struct socket *s, int index, u64 flags);
 #else
-int kproxy_bind_bpf(struct socket *kproxy,
-		    struct socket *s1, struct socket *s2, u64 flags)
+int kproxy_bind_bpf(struct socket *kproxy, struct socket *s, int index, u64 flags)
 {
 	return -EOPNOTSUPP;
 }

@@ -37,7 +37,7 @@ struct kproxy_socks {
 	int client;
 	int port;
 	char *name;
-	char *msg;
+	char msg[100];
 	bool sender;
 	bool recv;
 };
@@ -88,6 +88,7 @@ static void *client_handler(void *fd)
 			err = write(ks->client, ks->msg, strlen(ks->msg));
 			if (err < 0)
 				perror("client_handler sender error");
+			printf("send(@%s:%i:%u -- %s\n", ks->name, err, strlen(ks->msg), ks->msg); 
 		}
 		if (ks->recv) {
 			err = recv(ks->client, buf, 80, 0);
@@ -157,9 +158,10 @@ static void *server_handler(void *fd)
 
 	while (running) {
 		if (ks->sender) {
-			err = write(ks->accept, ks->msg, strlen(ks->msg));
+			err = write(ks->accept, ks->msg, 4);//strlen(ks->msg));
 			if (err < 0)
 				perror("server handler sender error");
+			printf("send(@%s:%i:%u -- %s\n", ks->name, err, strlen(ks->msg), ks->msg); 
 		}
 
 		if (ks->recv) {
@@ -172,6 +174,7 @@ static void *server_handler(void *fd)
 				printf("recv(@%s:%i): ", ks->name, err);
 				for (i = 0; i < err; i++)
 					printf("%c", buf[i]);
+				printf("\n");
 			}
 		}
 		sleep(1);
@@ -216,39 +219,63 @@ int main(int argc, char **argv)
 
 	/* Configure Frontend */
 	frontend_client.name = "frontend_client";
-	frontend_client.msg = "hello frontend_client here\n";
+	frontend_client.msg[0] = 0x01;
+	frontend_client.msg[1] = 0x02;
+	frontend_client.msg[2] = 0x03;
+	frontend_client.msg[3] = 0x04;
+	frontend_client.msg[4] = 0x00;//"1hello frontend_client here\n";
 	frontend_client.port = FRONTEND_PORT;
 	frontend_client.sender = true;
 	frontend_client.recv = false;
 
 	frontend_server.name = "frontend_server";
-	frontend_server.msg = "hello frontend_server here\n";
+	frontend_server.msg[0] = 0x01;//"1hello frontend_server here\n";
+	frontend_server.msg[1] = 0x02;//"1hello frontend_server here\n";
+	frontend_server.msg[2] = 0x03;//"1hello frontend_server here\n";
+	frontend_server.msg[3] = 0x04;//"1hello frontend_server here\n";
+	frontend_server.msg[4] = 0x00;//"1hello frontend_server here\n";
 	frontend_server.port = FRONTEND_PORT;
 	frontend_server.sender = false;
 	frontend_server.recv = false;
 
 	/* Configure Backend */
 	backend_client.name = "backend_client";
-	backend_client.msg = "hello backend_client here\n";
+	backend_client.msg[0] = 0x00;//"0hello backend_client here\n";
+	backend_client.msg[1] = 0x01;//"0hello backend_client here\n";
+	backend_client.msg[2] = 0x02;//"0hello backend_client here\n";
+	backend_client.msg[3] = 0x03;//"0hello backend_client here\n";
+	backend_client.msg[4] = 0x00;//"0hello backend_client here\n";
 	backend_client.port = BACKEND_PORT;
 	backend_client.sender = false;
 	backend_client.recv = false;
 
 	backend_server.name = "backend_server";
-	backend_server.msg = "hello backend_server here\n";
+	backend_server.msg[0] = 0x00;// "0hello backend_server here\n";
+	backend_server.msg[1] = 0x01;//"0hello backend_server here\n";
+	backend_server.msg[2] = 0x02;//"0hello backend_server here\n";
+	backend_server.msg[3] = 0x03;//"0hello backend_server here\n";
+	backend_server.msg[4] = 0x00;//"0hello backend_server here\n";
 	backend_server.port = BACKEND_PORT;
 	backend_server.sender = false;
 	backend_server.recv = true;
 
 	/* Backend to ADD as second endpoint */
 	backend2_client.name = "backend2_client";
-	backend2_client.msg = "hello backend2_client here\n";
+	backend2_client.msg[0] = 0x00;//"0hello backend2_client here\n";
+	backend2_client.msg[1] = 0x01;//"0hello backend2_client here\n";
+	backend2_client.msg[2] = 0x02;//"0hello backend2_client here\n";
+	backend2_client.msg[3] = 0x03;//"0hello backend2_client here\n";
+	backend2_client.msg[4] = 0x00;//"0hello backend2_client here\n";
 	backend2_client.port = BACKEND2_PORT;
 	backend2_client.sender = false;
 	backend2_client.recv = false;
 
 	backend2_server.name = "backend2_server";
-	backend2_server.msg = "hello backend2_server here\n";
+	backend2_server.msg[0] = 0x00;//"0hello backend2_server here\n";
+	backend2_server.msg[1] = 0x01;//"0hello backend2_server here\n";
+	backend2_server.msg[2] = 0x02;//"0hello backend2_server here\n";
+	backend2_server.msg[3] = 0x03;//"0hello backend2_server here\n";
+	backend2_server.msg[4] = 0x00;//"0hello backend2_server here\n";
 	backend2_server.port = BACKEND2_PORT;
 	backend2_server.sender = false;
 	backend2_server.recv = true;
@@ -298,11 +325,6 @@ int main(int argc, char **argv)
 
 	sleep(2);
 
-	join.client_fd = frontend_server.accept;
-	join.server_fd = backend_client.client;
-	join.client_index = 0;
-	join.server_index = 0;
-
 	attach.bpf_fd_parse = prog_fd[0];
 	attach.bpf_fd_mux = prog_fd[1];
 	attach.max_peers = 3;
@@ -315,6 +337,16 @@ int main(int argc, char **argv)
 	}
 
 	printf("join frontend and backend\n");
+	join.sock_fd = frontend_server.accept;
+	join.index = 0;
+	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
+	if (err < 0) {
+		perror("join ioctl error\n");
+		return 1;
+	}
+
+	join.sock_fd = backend_client.client;
+	join.index = 1;
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
 	if (err < 0) {
 		perror("join ioctl error\n");
@@ -322,10 +354,8 @@ int main(int argc, char **argv)
 	}
 
 	printf("add additional backend\n");
-	add.client_fd = frontend_server.accept;
-	add.server_fd = backend2_client.client;
-	add.client_index = 1;
-	add.server_index = 0;
+	add.sock_fd = backend2_client.client;
+	add.index = 2;
 
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &add);
 	if (err < 0) {
@@ -347,8 +377,11 @@ void running_handler(int a)
 	int err;
 
 	printf("test: unjoin server and client\n");
-	unjoin.client_fd = frontend_server.accept;
-	unjoin.server_fd = backend2_client.client;
+	unjoin.sock_fd = frontend_server.accept;
+	err = ioctl(kproxy, SIOCKPROXYUNJOIN, &unjoin);
+	unjoin.sock_fd = backend_client.client;
+	err = ioctl(kproxy, SIOCKPROXYUNJOIN, &unjoin);
+	unjoin.sock_fd = backend2_client.client;
 	err = ioctl(kproxy, SIOCKPROXYUNJOIN, &unjoin);
 	if (err < 0)
 		perror("ioctl error unjoin\n");
