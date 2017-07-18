@@ -10,6 +10,7 @@
 #include <sys/ioctl.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include <linux/kproxy.h>
 #include <linux/bpf.h>
@@ -42,7 +43,7 @@ struct kproxy_socks {
 	bool recv;
 };
 
-volatile int running, kproxy;
+int running, kproxy;
 struct kproxy_join join, add, unjoin;
 struct kproxy_attach attach;
 
@@ -197,9 +198,11 @@ int main(int argc, char **argv)
 	pthread_t frontend_client_t, frontend_server_t;
 	pthread_t backend_client_t, backend_server_t;
 	pthread_t backend2_client_t, backend2_server_t;
-	int err;
+	int err, cg_fd, key;
 	char filename[256];
+	char *cg_path;
 
+	cg_path = argv[argc - 1];
 	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
 
 	if (load_bpf_file(filename)) {
@@ -229,7 +232,7 @@ int main(int argc, char **argv)
 	frontend_client.recv = false;
 
 	frontend_server.name = "frontend_server";
-	frontend_server.msg[0] = 0x01;//"1hello frontend_server here\n";
+	frontend_server.msg[0] = 0x02;//"1hello frontend_server here\n";
 	frontend_server.msg[1] = 0x02;//"1hello frontend_server here\n";
 	frontend_server.msg[2] = 0x03;//"1hello frontend_server here\n";
 	frontend_server.msg[3] = 0x04;//"1hello frontend_server here\n";
@@ -240,7 +243,7 @@ int main(int argc, char **argv)
 
 	/* Configure Backend */
 	backend_client.name = "backend_client";
-	backend_client.msg[0] = 0x00;//"0hello backend_client here\n";
+	backend_client.msg[0] = 0x01;//"0hello backend_client here\n";
 	backend_client.msg[1] = 0x01;//"0hello backend_client here\n";
 	backend_client.msg[2] = 0x02;//"0hello backend_client here\n";
 	backend_client.msg[3] = 0x03;//"0hello backend_client here\n";
@@ -250,7 +253,7 @@ int main(int argc, char **argv)
 	backend_client.recv = false;
 
 	backend_server.name = "backend_server";
-	backend_server.msg[0] = 0x00;// "0hello backend_server here\n";
+	backend_server.msg[0] = 0x01;// "0hello backend_server here\n";
 	backend_server.msg[1] = 0x01;//"0hello backend_server here\n";
 	backend_server.msg[2] = 0x02;//"0hello backend_server here\n";
 	backend_server.msg[3] = 0x03;//"0hello backend_server here\n";
@@ -261,7 +264,7 @@ int main(int argc, char **argv)
 
 	/* Backend to ADD as second endpoint */
 	backend2_client.name = "backend2_client";
-	backend2_client.msg[0] = 0x00;//"0hello backend2_client here\n";
+	backend2_client.msg[0] = 0x01;//"0hello backend2_client here\n";
 	backend2_client.msg[1] = 0x01;//"0hello backend2_client here\n";
 	backend2_client.msg[2] = 0x02;//"0hello backend2_client here\n";
 	backend2_client.msg[3] = 0x03;//"0hello backend2_client here\n";
@@ -271,7 +274,7 @@ int main(int argc, char **argv)
 	backend2_client.recv = false;
 
 	backend2_server.name = "backend2_server";
-	backend2_server.msg[0] = 0x00;//"0hello backend2_server here\n";
+	backend2_server.msg[0] = 0x01;//"0hello backend2_server here\n";
 	backend2_server.msg[1] = 0x01;//"0hello backend2_server here\n";
 	backend2_server.msg[2] = 0x02;//"0hello backend2_server here\n";
 	backend2_server.msg[3] = 0x03;//"0hello backend2_server here\n";
@@ -288,6 +291,42 @@ int main(int argc, char **argv)
 		perror("kproxy error\n");
 		return 1;
 	}
+
+	attach.bpf_fd_parse = prog_fd[0];
+	attach.bpf_fd_mux = prog_fd[1];
+	attach.max_peers = 3;
+
+	printf("attach kproxy to bpf\n");
+	err = ioctl(kproxy, SIOCKPROXYATTACH, &attach);
+	if (err < 0) {
+		perror("attach ioctl error\n");
+		return 1;
+	}
+
+	/* Add kproxy to sockmap in zero slot */
+	key = 0;
+	err = bpf_map_update_elem(map_fd[0], &key, &kproxy, 0);
+	if (err) {
+		perror("sockmap kproxy insert failed: bpf_update_elem");
+		return 1;
+	}
+
+	/* Cgroup configuration */
+	cg_fd = open(cg_path, O_DIRECTORY, O_RDONLY);
+	if (cg_fd < 0) {
+		fprintf(stderr, "ERROR: (%i) open cg path failed: %s\n", cg_fd, cg_path);
+		return cg_fd;
+	}
+	fprintf(stderr, "CG_FD open %i:%s\n", cg_fd, cg_path);
+
+	/* Attach to cgroups */
+	err = bpf_prog_attach(prog_fd[2], cg_fd, BPF_CGROUP_SOCK_OPS, 0);
+	if (err) {
+		printf("ERROR: bpf_prog_attach: %d (%s)\n", err, strerror(errno));
+		return err;
+	}
+
+	fprintf(stderr, "BPF_CGROUP_SOCKS_OPS attached: %d\n", err);
 
 	/* Create frontend */
 	pthread_create(&frontend_server_t, NULL,
@@ -325,17 +364,9 @@ int main(int argc, char **argv)
 
 	sleep(2);
 
-	attach.bpf_fd_parse = prog_fd[0];
-	attach.bpf_fd_mux = prog_fd[1];
-	attach.max_peers = 3;
 
-	printf("attach kproxy to bpf\n");
-	err = ioctl(kproxy, SIOCKPROXYATTACH, &attach);
-	if (err < 0) {
-		perror("attach ioctl error\n");
-		return 1;
-	}
-
+	/* Kproxy configuration */
+#if 0
 	printf("join frontend and backend\n");
 	join.sock_fd = frontend_server.accept;
 	join.index = 0;
@@ -362,6 +393,7 @@ int main(int argc, char **argv)
 		perror("join ioctl error\n");
 		return 1;
 	}
+#endif
 
 	pthread_join(frontend_client_t, NULL);
 	pthread_join(frontend_server_t, NULL);

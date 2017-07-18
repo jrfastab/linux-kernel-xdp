@@ -2038,7 +2038,6 @@ static inline int tcp_call_bpf(struct sock *sk, int op)
 	struct bpf_sock_ops_kern sock_ops;
 	int ret;
 
-	printk("%s: begin %i\n", __func__, op);
 	if (sk_fullsock(sk))
 		sock_owned_by_me(sk);
 
@@ -2051,7 +2050,6 @@ static inline int tcp_call_bpf(struct sock *sk, int op)
 		ret = sock_ops.reply;
 	else
 		ret = -1;
-	printk("%s: ret %i\n", __func__, ret);
 	return ret;
 }
 #else
@@ -2065,7 +2063,6 @@ static inline u32 tcp_timeout_init(struct sock *sk)
 {
 	int timeout;
 
-	printk("%s: timeout\n", __func__);
 	timeout = tcp_call_bpf(sk, BPF_SOCK_OPS_TIMEOUT_INIT);
 
 	if (timeout <= 0)
@@ -2077,7 +2074,6 @@ static inline u32 tcp_rwnd_init_bpf(struct sock *sk)
 {
 	int rwnd;
 
-	printk("%s: rwnd\n", __func__);
 	rwnd = tcp_call_bpf(sk, BPF_SOCK_OPS_RWND_INIT);
 
 	if (rwnd < 0)
@@ -2087,7 +2083,6 @@ static inline u32 tcp_rwnd_init_bpf(struct sock *sk)
 
 static inline bool tcp_bpf_ca_needs_ecn(struct sock *sk)
 {
-	printk("%s: ca needs ecn\n", __func__);
 	return (tcp_call_bpf(sk, BPF_SOCK_OPS_NEEDS_ECN) == 1);
 }
 #endif	/* _TCP_H */

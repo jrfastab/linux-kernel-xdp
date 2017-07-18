@@ -1868,6 +1868,10 @@ BPF_CALL_5(bpf_sk_redirect_map,
 		return BPF_SOCK_OPS_ABORT;
 	
 	kproxy = __sock_map_lookup_elem(map, proxy);
+	printk("%s: sock map lookup element %i = %p\n", __func__, proxy, kproxy);
+	if (!kproxy)
+		return -EINVAL;
+
 	return kproxy_bind_bpf(kproxy, sk->sk_socket, index, flags);
 }
 
