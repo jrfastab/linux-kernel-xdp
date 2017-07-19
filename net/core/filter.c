@@ -1864,6 +1864,9 @@ BPF_CALL_5(bpf_sk_redirect_map,
 	struct sock *sk = bpf_sock->sk;
 	struct socket *kproxy;
 
+	if (!sk_fullsock(sk))
+		return -EINVAL;
+
 	if (unlikely(flags))
 		return BPF_SOCK_OPS_ABORT;
 	

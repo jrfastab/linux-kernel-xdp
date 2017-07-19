@@ -83,6 +83,8 @@ static inline int strp_peek_len(struct strparser *strp)
 {
 	struct socket *sock = strp->sk->sk_socket;
 
+	if (unlikely(!sock->ops || !sock->ops->peek_len))
+		return 0;
 	return sock->ops->peek_len(sock);
 }
 
@@ -277,7 +279,7 @@ static int strp_recv(read_descriptor_t *desc, struct sk_buff *orig_skb,
 				 * buffer. Set strp->rx_need_bytes to wait for
 				 * the rest of the message. Also, set "early
 				 * eaten" since we've already buffered the skb
-				 * but don't consume yet per strp_read_sock.
+				  but don't consume yet per strp_read_sock.
 				 */
 
 				if (!rxm->accum_len) {
@@ -343,6 +345,9 @@ static int strp_read_sock(struct strparser *strp)
 	desc.arg.data = strp;
 	desc.error = 0;
 	desc.count = 1; /* give more than one skb per call */
+
+	if (unlikely(!sock->ops || !sock->ops->read_sock))
+			return -EBUSY;
 
 	/* sk should be locked here, so okay to do read_sock */
 	sock->ops->read_sock(strp->sk, &desc, strp_recv);
@@ -434,8 +439,10 @@ int strp_init(struct strparser *strp, struct sock *csk,
 	if (!cb || !cb->rcv_msg || !cb->parse_msg)
 		return -EINVAL;
 
+#if 0
 	if (!sock->ops->read_sock || !sock->ops->peek_len)
 		return -EAFNOSUPPORT;
+#endif
 
 	memset(strp, 0, sizeof(*strp));
 

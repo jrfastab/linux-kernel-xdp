@@ -622,7 +622,7 @@ static int kproxy_join_sockets(struct socket *kproxy,
 	if (!ksock->attached)
 		return -EINVAL;
 
-	if (!sock || !sock->ops->read_sock) {
+	if (!sock) {// || !sock->ops->read_sock) {
 		WARN_ON(1); // some invalid kernel hook
 		return -EINVAL;
 	}
@@ -631,7 +631,6 @@ static int kproxy_join_sockets(struct socket *kproxy,
 	if (IS_ERR(psock))
 		return PTR_ERR(psock);
 
-	return -EINVAL;
 	lock_sock(kproxy->sk);
 	err = kproxy_join_psock(psock, index);
 	if (err)
@@ -653,7 +652,7 @@ static int kproxy_join(struct socket *kproxy, struct kproxy_join *info)
 	int err;
 
 	sock = sockfd_lookup(info->sock_fd, &err);
-	if (!sock || !sock->ops->read_sock)
+	if (!sock)// || !sock->ops->read_sock)
 		return -EINVAL;
 
 	psock = kproxy_lookup_psock_by_socket(ksock, sock);
