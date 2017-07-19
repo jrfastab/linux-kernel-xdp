@@ -150,7 +150,7 @@ static void kproxy_format_proxy(struct kproxy_sock *ksock,
 			   kproxy_enqueued(server));
 
 		seq_puts(seq, " ");
-		kproxy_format_addresses(seq, server->sock->sk);
+		kproxy_format_addresses(seq, server->sock);
 
 		seq_puts(seq, "\n");
 	}

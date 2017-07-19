@@ -75,6 +75,7 @@ static struct kproxy_psock *kproxy_peers_get(struct kproxy_psock *psock,
 	index = kproxy_mux_func(psock, skb);
 	if (unlikely(index < 0 || index >= peers->max_peers))
 		return NULL;
+	printk("%s: target peer %i\n", __func__, index);
 
 	return rcu_dereference(peers->socks[index]);
 }
@@ -103,7 +104,7 @@ static inline struct kproxy_psock *kproxy_psock_sk(const struct sock *sk)
 static void kproxy_report_sk_error(struct kproxy_psock *psock, int err,
 				   bool hard_report)
 {
-	struct sock *sk = psock->sock->sk;
+	struct sock *sk = psock->sock;
 
 	/* Check if we still have stuff in receive queue that we might be
 	 * able to finish sending on the peer socket. Hold off on reporting
@@ -119,7 +120,7 @@ static void kproxy_report_sk_error(struct kproxy_psock *psock, int err,
 
 static void kproxy_report_deferred_error(struct kproxy_psock *psock)
 {
-	struct sock *sk = psock->sock->sk;
+	struct sock *sk = psock->sock;
 
 	sk->sk_err = psock->deferred_err;
 	sk->sk_error_report(sk);
@@ -127,7 +128,7 @@ static void kproxy_report_deferred_error(struct kproxy_psock *psock)
 
 static void kproxy_state_change(struct sock *sk)
 {
-	kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
+	//kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
 }
 
 static void kproxy_tx_work(struct kproxy_psock *psock);
@@ -187,6 +188,7 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	rcu_read_lock();
 	peer = kproxy_peers_get(psock, skb);
 	if (unlikely(!peer)) {
+		printk("%s: invalid peer from mux\n", __func__);
 		kfree_skb(skb);
 		goto out;
 	}
@@ -196,6 +198,8 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 		kfree_skb(skb);
 		goto out;
 	}
+
+	printk("%s: valid peer recv and target\n", __func__);
 
 	/* Push a message to peers queue and pause the parser if the peer
 	 * exceedes the high water mark. Note because we must consume
@@ -209,6 +213,7 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 		goto out;
 	}
 
+	printk("%s: kproxy recv done %i\n", __func__, err);
 	/* Probably got some data, kick writer side */
 	if (likely(!skb_queue_empty(&peer->rxqueue)))
 		kproxy_tx_writer(peer);
@@ -222,6 +227,7 @@ static void kproxy_data_ready(struct sock *sk)
 {
 	struct kproxy_psock *psock;
 
+	printk("%s: data ready\n", __func__);
 	read_lock_bh(&sk->sk_callback_lock);
 
 	psock = kproxy_psock_sk(sk);
@@ -259,9 +265,14 @@ static void kproxy_tx_work(struct kproxy_psock *psock)
 {
 	int sent, n;
 	struct sk_buff *skb;
+	struct socket *sk;
 	int orig_consumed;
 
 	if (unlikely(psock->tx_stopped))
+		return;
+
+	printk("%s: ...\n", __func__);
+	if (unlikely(!psock->sock->sk_socket))
 		return;
 
 	orig_consumed = psock->consumed;
@@ -273,11 +284,13 @@ static void kproxy_tx_work(struct kproxy_psock *psock)
 		goto start;
 	}
 
+	printk("%s: skb dequeu\n", __func__);
 	while ((skb = skb_dequeue(&psock->rxqueue))) {
 		sent = 0;
 start:
 		do {
-			n = skb_send_sock(skb, psock->sock, sent);
+			n = skb_send_sock(skb, psock->sock->sk_socket, sent);
+			printk("%s: send_sock %i\n", __func__, n);
 			if (n <= 0) {
 				if (n == -EAGAIN) {
 					/* Save state to try again when
@@ -293,9 +306,11 @@ start:
 				 * been closed somehow. Report this
 				 * on the transport socket.
 				 */
+#if 0
 				kproxy_report_sk_error(psock,
 						       n ? -n : EPIPE, true);
 				psock->tx_stopped = 1;
+#endif
 				goto out;
 			}
 			sent += n;
@@ -327,12 +342,13 @@ static void kproxy_write_space(struct sock *sk)
 {
 	struct kproxy_psock *psock = kproxy_psock_sk(sk);
 
+printk("%s: write space\n", __func__);
 	schedule_writer(psock);
 }
 
 static void kproxy_stop_sock(struct kproxy_psock *psock)
 {
-	struct sock *sk = psock->sock->sk;
+	struct sock *sk = psock->sock;
 
 	/* Set up callbacks */
 	write_lock_bh(&sk->sk_callback_lock);
@@ -355,8 +371,8 @@ static void kproxy_destroy_psock(struct rcu_head *rcu)
 	kproxy_stop_sock(psock);
 	__skb_queue_purge(&psock->rxqueue); /* tbd something better */
 	strp_done(&psock->strp);
-	sock_put(psock->sock->sk);
-	fput(psock->sock->file);
+	sock_put(psock->sock);
+	//fput(psock->sock->file);
 
 	bpf_prog_put(psock->bpf_prog);
 	if (psock->bpf_mux)
@@ -376,8 +392,8 @@ struct kproxy_psock *kproxy_lookup_psock(struct kproxy_sock *ksock, int fd)
 	return NULL;
 }
 
-struct kproxy_psock *kproxy_lookup_psock_by_socket(struct kproxy_sock *ksock,
-						   struct socket *sock)
+struct kproxy_psock *kproxy_lookup_psock_by_sock(struct kproxy_sock *ksock,
+						 struct sock *sock)
 {
 	struct kproxy_psock *psock;
 
@@ -482,7 +498,7 @@ static int kproxy_read_sock_done(struct strparser *strp, int err)
 }
 
 static int kproxy_init_sock(struct kproxy_psock *psock,
-			    struct socket *sock)
+			    struct sock *sock)
 {
 	struct strp_callbacks cb;
 	int err;
@@ -498,18 +514,18 @@ static int kproxy_init_sock(struct kproxy_psock *psock,
 	psock->queue_hiwat = 1000000;
 	psock->queue_lowat = 1000000;
 
-	err = strp_init(&psock->strp, psock->sock->sk, &cb);
+	err = strp_init(&psock->strp, sock, &cb);
 	if (err) {
 		WARN_ON(1);
 		return -EINVAL;
 	}
-	sock_hold(sock->sk);
+	sock_hold(sock);
 	return 0;
 }
 
 static void kproxy_start_sock(struct kproxy_psock *psock)
 {
-	struct sock *sk = psock->sock->sk;
+	struct sock *sk = psock->sock;
 
 	/* Set up callbacks */
 	write_lock_bh(&sk->sk_callback_lock);
@@ -523,7 +539,7 @@ static void kproxy_start_sock(struct kproxy_psock *psock)
 	write_unlock_bh(&sk->sk_callback_lock);
 }
 
-static struct kproxy_psock *kproxy_init_psock(struct socket *sock,
+static struct kproxy_psock *kproxy_init_psock(struct sock *sock,
 					      struct kproxy_sock *ksock)
 {
 	struct bpf_prog *prog, *mux_prog = NULL;
@@ -576,7 +592,9 @@ static struct kproxy_psock *kproxy_init_psock(struct socket *sock,
 		goto alloc_err;
 	return psock;
 alloc_err:
+#if 0
 	fput(sock->file);
+#endif
 	if (mux_prog)
 		bpf_prog_put(mux_prog);
 	bpf_prog_put(prog);
@@ -609,13 +627,13 @@ static int kproxy_join_psock(struct kproxy_psock *psock, int index)
 }
 
 static int kproxy_join_sockets(struct socket *kproxy,
-			       struct socket *sock, int index)
+			       struct sock *sock, int index)
 {
 	struct kproxy_sock *ksock = kproxy_sk(kproxy->sk);
 	struct kproxy_psock *psock;
 	int err;
 
-	psock = kproxy_lookup_psock_by_socket(ksock, sock);
+	psock = kproxy_lookup_psock_by_sock(ksock, sock);
 	if (psock)
 		return -EINVAL;
 
@@ -651,37 +669,36 @@ static int kproxy_join(struct socket *kproxy, struct kproxy_join *info)
 	struct socket *sock;
 	int err;
 
-	sock = sockfd_lookup(info->sock_fd, &err);
-	if (!sock)// || !sock->ops->read_sock)
-		return -EINVAL;
-
-	psock = kproxy_lookup_psock_by_socket(ksock, sock);
-	if (psock) {
-		sock_put(psock->sock->sk);
-		fput(psock->sock->file);
-		return -EINVAL;
-	}
-
 	if (!ksock->attached)
 		return -EINVAL;
 
-	psock = kproxy_init_psock(sock, ksock);
-	if (IS_ERR(psock))
+	sock = sockfd_lookup(info->sock_fd, &err);
+	if (!sock)
 		return -EINVAL;
+
+	psock = kproxy_lookup_psock_by_sock(ksock, sock->sk);
+	if (psock)
+		goto out;
+
+	psock = kproxy_init_psock(sock->sk, ksock);
+	if (IS_ERR(psock))
+		goto out;
 
 	lock_sock(sock->sk);
 	err = kproxy_join_psock(psock, info->index);
 	if (err)
-		goto out;
+		goto out_release;
 
 	list_add_rcu(&psock->list, &ksock->server_sock);
 	kproxy_start_sock(psock);
-out:
+out_release:
 	release_sock(sock->sk);
+out:
+	fput(sock->file);
 	return err;
 }
 
-int kproxy_bind_bpf(struct socket *kproxy, struct socket *s, int i, u64 flags)
+int kproxy_bind_bpf(struct socket *kproxy, struct sock *s, int i, u64 flags)
 {
 	return  kproxy_join_sockets(kproxy, s, i);
 }

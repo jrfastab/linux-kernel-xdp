@@ -100,7 +100,7 @@ static void *client_handler(void *fd)
 
 				printf("recv(@%s:%i): ", ks->name, err);
 				for (i = 0; i < err; i++)
-					printf("%c", buf[i]);
+					printf(".%c", buf[i]);
 				printf("\n");
 			}
 		}
@@ -157,6 +157,7 @@ static void *server_handler(void *fd)
 		return NULL;
 	}
 
+	printf("%s: server accepted @ %i\n", ks->name, ks->port);
 	while (running) {
 		if (ks->sender) {
 			err = write(ks->accept, ks->msg, 4);//strlen(ks->msg));
@@ -168,13 +169,14 @@ static void *server_handler(void *fd)
 		if (ks->recv) {
 			err = recv(ks->accept, buf, 80, 0);
 			if (err < 0) {
+				printf("recv error @%s:%i\n", ks->name, err);
 				perror("server handler recv error\n");
 			} else {
 				int i;
 
 				printf("recv(@%s:%i): ", ks->name, err);
 				for (i = 0; i < err; i++)
-					printf("%c", buf[i]);
+					printf(".%c", buf[i]);
 				printf("\n");
 			}
 		}
@@ -222,7 +224,7 @@ int main(int argc, char **argv)
 
 	/* Configure Frontend */
 	frontend_client.name = "frontend_client";
-	frontend_client.msg[0] = 0x01;
+	frontend_client.msg[0] = 0x02;
 	frontend_client.msg[1] = 0x02;
 	frontend_client.msg[2] = 0x03;
 	frontend_client.msg[3] = 0x04;
@@ -329,6 +331,7 @@ int main(int argc, char **argv)
 	fprintf(stderr, "BPF_CGROUP_SOCKS_OPS attached: %d\n", err);
 
 	/* Create frontend */
+	printf("create frontend\n");
 	pthread_create(&frontend_server_t, NULL,
 		       server_handler, &frontend_server);
 	sleep(1);
@@ -338,6 +341,7 @@ int main(int argc, char **argv)
 	sleep(1);
 
 	/* Create backend */
+	printf("create backend\n");
 	pthread_create(&backend_server_t, NULL,
 		       server_handler, &backend_server);
 	sleep(1);
@@ -347,36 +351,34 @@ int main(int argc, char **argv)
 	sleep(1);
 
 	/* Create backend2 */
+/*
+	printf("create backend2\n");
 	pthread_create(&backend2_server_t, NULL,
 		       server_handler, &backend2_server);
 	sleep(1);
 	pthread_create(&backend2_client_t, NULL,
 		       client_handler, &backend2_client);
+*/
 
 	sleep(1);
 
+	printf("wait for connections\n");
 	while ((backend_client.client == 0 ||
 		frontend_client.client == 0) && running)
 		sleep(1);
 
-	if (!running)
+	if (!running) {
+		printf("not running stop\n");
 		return 0;
+	}
 
 	sleep(2);
 
 
-	/* Kproxy configuration */
 #if 0
+	/* Kproxy configuration */
 	printf("join frontend and backend\n");
 	join.sock_fd = frontend_server.accept;
-	join.index = 0;
-	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
-	if (err < 0) {
-		perror("join ioctl error\n");
-		return 1;
-	}
-
-	join.sock_fd = backend_client.client;
 	join.index = 1;
 	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
 	if (err < 0) {
@@ -384,6 +386,15 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	join.sock_fd = backend_client.client;
+	join.index = 2;
+	err = ioctl(kproxy, SIOCKPROXYJOIN, &join);
+	if (err < 0) {
+		perror("join ioctl error\n");
+		return 1;
+	}
+
+#if 0
 	printf("add additional backend\n");
 	add.sock_fd = backend2_client.client;
 	add.index = 2;
@@ -394,13 +405,16 @@ int main(int argc, char **argv)
 		return 1;
 	}
 #endif
+#endif
 
+	printf("run threads\n");
 	pthread_join(frontend_client_t, NULL);
 	pthread_join(frontend_server_t, NULL);
 	pthread_join(backend_client_t, NULL);
 	pthread_join(backend_server_t, NULL);
-	pthread_join(backend2_client_t, NULL);
-	pthread_join(backend2_server_t, NULL);
+//	pthread_join(backend2_client_t, NULL);
+//	pthread_join(backend2_server_t, NULL);
+	printf("test complete\n");
 	return 0;
 }
 

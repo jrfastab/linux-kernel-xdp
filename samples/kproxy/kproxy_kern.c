@@ -53,42 +53,25 @@ int bpf_kproxy(struct bpf_sock_ops *skops)
 
 	op = (int) skops->op;
 
-	bpf_printk("BPF command: %d\n", op);
 	switch (op) {
-	case BPF_SOCK_OPS_RWND_INIT:
-		lport = skops->local_port;
-		rport = skops->remote_port;
-		bpf_printk("ops_rwnd_init: %d -> %d\n", lport, bpf_ntohl(rport));
-		break;
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
 		lport = skops->local_port;
 		rport = skops->remote_port;
 		bpf_printk("passive_established: %d -> %d\n", lport, bpf_ntohl(rport));
 
-		if (bpf_ntohl(rport) == 9000)
-			index = 1;
-		else
-			index = 2;
-		//err = bpf_sk_redirect_map(skops, &kproxy_map, 0, index, 0);
-		break;
-	case BPF_SOCK_OPS_NEEDS_ECN:
-		lport = skops->local_port;
-		rport = skops->remote_port;
-
-		bpf_printk("ineeds_ecn: %d -> %d\n", lport, bpf_ntohl(rport));
-		break;
-	case BPF_SOCK_OPS_TCP_CONNECT_CB:
-		lport = skops->local_port;
-		rport = skops->remote_port;
-
-		bpf_printk("tcp_connect_cb: %d -> %d\n", lport, bpf_ntohl(rport));
+		if (lport == 9000) {
+			err = bpf_sk_redirect_map(skops, &kproxy_map, 0, 1, 0);
+		}
 		break;
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
 		lport = skops->local_port;
 		rport = skops->remote_port;
 
 		bpf_printk("active_established_cb: %d -> %d\n", lport, bpf_ntohl(rport));
-		err = bpf_sk_redirect_map(skops, &kproxy_map, 0, index, 0);
+
+		if (bpf_ntohl(rport) == 9800) {
+			err = bpf_sk_redirect_map(skops, &kproxy_map, 0, 2, 0);
+		}
 		break;
 	default:
 		break;

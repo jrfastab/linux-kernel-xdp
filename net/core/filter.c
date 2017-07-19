@@ -1875,7 +1875,7 @@ BPF_CALL_5(bpf_sk_redirect_map,
 	if (!kproxy)
 		return -EINVAL;
 
-	return kproxy_bind_bpf(kproxy, sk->sk_socket, index, flags);
+	return kproxy_bind_bpf(kproxy, sk, index, flags);
 }
 
 static const struct bpf_func_proto bpf_sk_redirect_map_proto = {

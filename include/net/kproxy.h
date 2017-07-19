@@ -73,7 +73,7 @@ struct kproxy_psock {
 	/* Back reference to the file descriptor of the sock */
 	int fd;
 	int index;
-	struct socket *sock;
+	struct sock *sock;
 
 	struct list_head list;
 
