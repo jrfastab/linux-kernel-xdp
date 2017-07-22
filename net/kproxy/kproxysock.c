@@ -131,11 +131,11 @@ static void kproxy_state_change(struct sock *sk)
 	//kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
 }
 
-static void kproxy_tx_work(struct kproxy_psock *psock);
+static void kproxy_tx_work(struct work_struct *w);
 
 void schedule_writer(struct kproxy_psock *psock)
 {
-	kproxy_tx_work(psock);
+	schedule_work(&psock->tx_work);
 }
 
 /* Post skb to peers proxy queue */
@@ -261,13 +261,15 @@ static void check_for_rx_wakeup(struct kproxy_psock *psock,
 	}
 }
 
-static void kproxy_tx_work(struct kproxy_psock *psock)
+static void kproxy_tx_work(struct work_struct *w)
 {
-	int sent, n;
+	struct kproxy_psock *psock;
 	struct sk_buff *skb;
 	struct socket *sk;
 	int orig_consumed;
+	int sent, n;
 
+ 	psock = container_of(w, struct kproxy_psock, tx_work);
 	if (unlikely(psock->tx_stopped))
 		return;
 
@@ -361,6 +363,8 @@ static void kproxy_stop_sock(struct kproxy_psock *psock)
 
 	/* Make sure tx_stopped is committed */
 	smp_mb();
+
+	cancel_work_sync(&psock->tx_work);
 }
 
 static void kproxy_destroy_psock(struct rcu_head *rcu)
@@ -509,6 +513,7 @@ static int kproxy_init_sock(struct kproxy_psock *psock,
 	cb.read_sock_done = kproxy_read_sock_done;
 
 	skb_queue_head_init(&psock->rxqueue);
+	INIT_WORK(&psock->tx_work, kproxy_tx_work);
 
 	psock->sock = sock;
 	psock->queue_hiwat = 1000000;

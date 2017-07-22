@@ -78,7 +78,6 @@ struct kproxy_psock {
 	struct list_head list;
 
 	struct work_struct tx_work;
-	struct work_struct rx_work;
 
 	void (*save_data_ready)(struct sock *sk);
 	void (*save_write_space)(struct sock *sk);

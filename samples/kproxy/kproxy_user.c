@@ -261,7 +261,7 @@ int main(int argc, char **argv)
 	backend_server.msg[3] = 0x03;//"0hello backend_server here\n";
 	backend_server.msg[4] = 0x00;//"0hello backend_server here\n";
 	backend_server.port = BACKEND_PORT;
-	backend_server.sender = false;
+	backend_server.sender = true;
 	backend_server.recv = true;
 
 	/* Backend to ADD as second endpoint */
