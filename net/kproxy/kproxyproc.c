@@ -113,6 +113,13 @@ static void kproxy_format_proxy_header(struct seq_file *seq)
 	);
 }
 
+
+#define NIPQUAD(addr) \
+		((unsigned char *)&addr)[0], \
+	((unsigned char *)&addr)[1], \
+	((unsigned char *)&addr)[2], \
+	((unsigned char *)&addr)[3]
+
 static void kproxy_format_addresses(struct seq_file *seq,
 				    struct sock *sk)
 {
@@ -120,7 +127,7 @@ static void kproxy_format_addresses(struct seq_file *seq,
 	case AF_INET: {
 		struct inet_sock *inet = inet_sk(sk);
 
-		seq_printf(seq, "%pI4:%u->%pI4:%u",
+		seq_printf(seq, "",
 			   &inet->inet_saddr, ntohs(inet->inet_sport),
 			   &inet->inet_daddr, ntohs(inet->inet_dport));
 		break;

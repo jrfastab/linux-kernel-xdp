@@ -90,16 +90,6 @@ static struct kproxy_psock *__kproxy_peers_get(struct kproxy_psock *psock,
 	return rcu_dereference(peers->socks[index]);
 }
 
-static inline struct kproxy_sock *kproxy_sk(const struct sock *sk)
-{
-	return (struct kproxy_sock *)sk;
-}
-
-static inline struct kproxy_psock *kproxy_psock_sk(const struct sock *sk)
-{
-	return (struct kproxy_psock *)sk->sk_user_data;
-}
-
 static void kproxy_report_sk_error(struct kproxy_psock *psock, int err,
 				   bool hard_report)
 {
@@ -486,6 +476,8 @@ static int kproxy_release(struct socket *sock)
 	knet->count--;
 	mutex_unlock(&knet->mutex);
 
+	sk->sk_prot->unhash(sk);
+
 	sock->sk = NULL;
 	sock_put(sk);
 out:
@@ -790,11 +782,47 @@ static const struct proto_ops kproxy_dgram_ops = {
 	.sendpage =	sock_no_sendpage,
 };
 
-static struct proto kproxy_proto = {
+int kproxy_hash_sk(struct sock *sk)
+{
+	struct kproxy_hashinfo *h = sk->sk_prot->h.kproxy_hash;
+	struct hlist_head *head;
+
+	head = &h->ht;
+
+	printk("%s: add hash sk\n", __func__);
+	write_lock_bh(&h->lock);
+	sk_add_node(sk, head);
+	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+	write_unlock_bh(&h->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kproxy_hash_sk);
+
+void kproxy_unhash_sk(struct sock *sk)
+{
+	struct kproxy_hashinfo *h = sk->sk_prot->h.kproxy_hash;
+
+	printk("%s: remo hash sk\n", __func__);
+	write_lock_bh(&h->lock);
+	if (sk_del_node_init(sk))
+		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
+	write_unlock_bh(&h->lock);
+}
+
+static struct kproxy_hashinfo kproxy_hashinfo = {
+	.lock = __RW_LOCK_UNLOCKED(kproxy_hashinfo.lock),
+};
+
+struct proto kproxy_proto = {
 	.name   = "KPROXY",
 	.owner  = THIS_MODULE,
+	.hash   = kproxy_hash_sk,
+	.unhash = kproxy_unhash_sk,
 	.obj_size = sizeof(struct kproxy_sock),
+	.h.kproxy_hash = &kproxy_hashinfo,
 };
+EXPORT_SYMBOL_GPL(kproxy_proto);
 
 /* Create proto operation for kcm sockets */
 static int kproxy_create(struct net *net, struct socket *sock,
@@ -817,6 +845,7 @@ static int kproxy_create(struct net *net, struct socket *sock,
 		return -ENOMEM;
 
 	sock_init_data(sock, sk);
+	sk->sk_prot->hash(sk);
 
 	ksock = kproxy_sk(sk);
 	INIT_LIST_HEAD_RCU(&ksock->server_sock);

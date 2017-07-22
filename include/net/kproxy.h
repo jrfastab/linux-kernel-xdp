@@ -17,6 +17,12 @@
 #include <uapi/linux/kproxy.h>
 
 extern unsigned int kproxy_net_id;
+extern struct proto kproxy_proto;
+
+struct kproxy_hashinfo {
+	rwlock_t lock;
+	struct hlist_head ht;
+};
 
 struct kproxy_stats {
 	unsigned long long tx_bytes;
@@ -107,6 +113,16 @@ struct kproxy_net {
 static inline unsigned int kproxy_enqueued(struct kproxy_psock *psock)
 {
 	return psock->produced - psock->consumed;
+}
+
+static inline struct kproxy_sock *kproxy_sk(const struct sock *sk)
+{
+	return (struct kproxy_sock *)sk;
+}
+
+static inline struct kproxy_psock *kproxy_psock_sk(const struct sock *sk)
+{
+	return (struct kproxy_psock *)sk->sk_user_data;
 }
 
 #ifdef CONFIG_PROC_FS

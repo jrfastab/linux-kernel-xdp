@@ -12,7 +12,11 @@
 #include <signal.h>
 #include <fcntl.h>
 
+#include <linux/netlink.h>
+#include <linux/socket.h>
 #include <linux/kproxy.h>
+#include <linux/kproxy_diag.h>
+#include <linux/sock_diag.h>
 #include <linux/bpf.h>
 #include <linux/if_link.h>
 #include <assert.h>
@@ -21,10 +25,6 @@
 #include "../bpf/bpf_load.h"
 #include "../bpf/bpf_util.h"
 #include "../bpf/libbpf.h"
-
-#ifndef AF_KCM
-#define AF_KCM		41	/* Kernel Connection Multiplexor*/
-#endif
 
 #define AF_KPROXY	44
 
@@ -89,19 +89,23 @@ static void *client_handler(void *fd)
 			err = write(ks->client, ks->msg, strlen(ks->msg));
 			if (err < 0)
 				perror("client_handler sender error");
-			printf("send(@%s:%i:%u -- %s\n", ks->name, err, strlen(ks->msg), ks->msg); 
+#ifdef DEBUG
+			printf("send(@%s:%i:%lu -- %s\n", ks->name, err, strlen(ks->msg), ks->msg); 
+#endif
 		}
 		if (ks->recv) {
 			err = recv(ks->client, buf, 80, 0);
 			if (err < 0) {
 				perror("client handler recv error\n");
 			} else {
+#ifdef DEBBUG
 				int i;
 
 				printf("recv(@%s:%i): ", ks->name, err);
 				for (i = 0; i < err; i++)
 					printf(".%c", buf[i]);
 				printf("\n");
+#endif
 			}
 		}
 		sleep(1);
@@ -163,7 +167,9 @@ static void *server_handler(void *fd)
 			err = write(ks->accept, ks->msg, 4);//strlen(ks->msg));
 			if (err < 0)
 				perror("server handler sender error");
+#ifdef DEBUG
 			printf("send(@%s:%i:%u -- %s\n", ks->name, err, strlen(ks->msg), ks->msg); 
+#endif
 		}
 
 		if (ks->recv) {
@@ -172,12 +178,14 @@ static void *server_handler(void *fd)
 				printf("recv error @%s:%i\n", ks->name, err);
 				perror("server handler recv error\n");
 			} else {
+#ifdef DEBUG
 				int i;
 
 				printf("recv(@%s:%i): ", ks->name, err);
 				for (i = 0; i < err; i++)
 					printf(".%c", buf[i]);
 				printf("\n");
+#endif
 			}
 		}
 		sleep(1);
@@ -189,6 +197,224 @@ static void *server_handler(void *fd)
 }
 
 void running_handler(int a);
+
+struct diag_req {
+	struct nlmsghdr nlh;
+	struct kproxy_diag_req r;
+};
+
+struct diag_reply {
+	struct nlmsghdr nlh;
+	struct kproxy_diag_msg r;
+};
+
+#define SEQ_SEED 123456
+
+static int rtnl_open(void)
+{
+	socklen_t addr_len;
+	struct sockaddr_nl local;
+	int rcvbuf = 1024 * 1024;
+	int sndbuf = 32768;
+	int fd, err;
+
+	fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+	if (fd < 0) {
+		perror("Cannot open netlink socket");
+		return fd;
+	}
+
+	err = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+	if (err < 0) {
+		perror("SO_SNDBUF");
+		return err;
+	}
+
+	err = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+	if (err < 0) {
+		perror("SO_RCVBUF");
+		return err;
+	}
+
+	addr_len = sizeof(local);
+	memset(&local, 0, sizeof(local));
+	local.nl_family = AF_NETLINK;
+	local.nl_groups = 0;
+	err = bind(fd, (struct sockaddr*)&local, addr_len);
+	if (err	< 0) {
+		perror("Cannot bind netlink socket");
+		return err;
+	}
+
+	err = getsockname(fd, (struct sockaddr*)&local, &addr_len);
+	if (err	< 0) {
+		perror("Cannot getsockname");
+		return err;
+	}
+	if (addr_len != sizeof(local)) {
+		fprintf(stderr, "Wrong address length %d\n", addr_len);
+		return -EINVAL;
+	}
+	if (local.nl_family != AF_NETLINK) {
+		fprintf(stderr, "Wrong address family %d\n", local.nl_family);
+		return -EINVAL;
+	}
+
+	return fd;
+}
+
+#define NLATTR_LENGTH(len) (NLA_ALIGN(sizeof(struct nlattr)) + (len))
+#define NLATTR_DATA(nlattr) ((void *)(((char*)(nlattr)) + NLATTR_LENGTH(0)))
+#define NLATTR_PAYLOAD(nlattr) ((int)((nlattr)->nla_len) - NLATTR_LENGTH(0))
+#define NLATTR_TYPE(nlattr) (nlattr->nla_type)
+
+#define NLATTR_OK(attr,len) ((len) >= (int)sizeof(struct nlattr) && \
+			       (attr)->nla_len >= sizeof(struct nlattr) && \
+			       (attr)->nla_len <= (len))
+#define NLATTR_NEXT(nlh,len)	 ((len) -= NLMSG_ALIGN((nlh)->nla_len), \
+				  (struct nlattr*)(((char*)(nlh)) + NLMSG_ALIGN((nlh)->nla_len)))
+
+
+#define NIPQUAD(addr) \
+	((unsigned char *)&addr)[0], \
+	((unsigned char *)&addr)[1], \
+	((unsigned char *)&addr)[2], \
+	((unsigned char *)&addr)[3]
+
+static void show_psock_info(struct nlattr *nlh, int len)
+{
+	struct nlattr *attr = NLATTR_DATA(nlh);
+	struct kproxy_diag_psock_stats *stats = NLATTR_DATA(attr);
+
+#ifdef DEBUG
+	printf("attr len %i type %i\n", __func__, attr->nla_len, attr->nla_type);
+#endif
+	printf("\ttx bytes %llu rx_bytes %llu\n", stats->tx_bytes, stats->rx_bytes);
+
+	attr = NLATTR_NEXT(attr, len);
+
+	if (attr->nla_type == KPROXY_DIAG_PSOCK_AF_INET) {
+		struct kproxy_diag_psock_inet *inet = NLATTR_DATA(attr);
+
+		printf("\taf_inet: %u.%u.%u.%u:%u->%u.%u.%u.%u:%u\n",
+			NIPQUAD(inet->saddr), inet->sport,
+			NIPQUAD(inet->daddr), inet->dport);
+	} else if (attr->nla_type == KPROXY_DIAG_PSOCK_AF_INET6) {
+		printf("\taf_inet6:\n");
+	} else {
+		printf("\t<unknown socket type>\n");
+	}
+}
+
+static void show_proxy_info(struct nlattr *nlh, int len)
+{
+	struct nlattr *psock_list = NLATTR_DATA(nlh);
+	struct nlattr *psock = NLATTR_DATA(psock_list);
+
+	while (NLATTR_OK(psock, len)) {
+		show_psock_info(psock, len);
+		psock = NLATTR_NEXT(psock, len);
+
+#ifdef DEBUG
+		printf("%s: psock_list type %i len %i->%i->%i:%i psock %i %i\n",
+			__func__, psock_list->nla_type, plen, olen, len, psock_list->nla_len,
+			psock->nla_type, psock->nla_len);
+#endif
+	}
+}
+
+static void show_reply(struct nlmsghdr *nlh, int len)
+{
+	struct kproxy_diag_msg *reply = NLMSG_DATA(nlh);
+	struct nlattr *proxy_list;
+
+#ifdef DEBUG
+	printf("family %u num %u cookie %08x\n",
+		reply->kdiag_family, reply->kdiag_num,
+		reply->kdiag_cookie[0]);
+#else
+	printf("%08x:\n", reply->kdiag_cookie[0]);
+#endif
+
+	proxy_list = (struct nlattr *)((char *)reply + NLMSG_ALIGN(sizeof(*reply)));
+
+	//len = NLATTR_PAYLOAD(proxy_list);
+	while (NLATTR_OK(proxy_list, len)) {
+		show_proxy_info(proxy_list, len);
+		proxy_list = NLATTR_NEXT(proxy_list, len);
+	}
+}
+
+static void kproxy_query(void)
+{
+	int fd;
+	struct sockaddr_nl nladdr = {.nl_family = AF_NETLINK };
+	struct diag_req req = {.nlh = {
+			.nlmsg_type = SOCK_DIAG_BY_FAMILY,
+			.nlmsg_flags = NLM_F_ROOT | NLM_F_REQUEST,
+			.nlmsg_seq = SEQ_SEED,
+			.nlmsg_len = sizeof(req),
+		},
+	};
+	struct nlmsghdr *n;
+	struct msghdr msg;
+	struct iovec iov[1];
+	int err, iovlen = 1; 
+	char buf[32768];
+
+	/* open socket diag */
+	fd = rtnl_open();
+	if (fd < 0)
+		return;
+
+	/* kproxy request */
+	memset(&req.r, 0, sizeof(req.r));
+	req.r.diag_family = AF_KPROXY;
+	//req.r.diag_protocol =  0;
+
+	/* common nlmsg setup for sock diag request */
+	iov[0].iov_base = &req;
+	iov[0].iov_len = sizeof(req);
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_name = &nladdr;
+	msg.msg_namelen = sizeof(nladdr);
+	msg.msg_iov = iov;
+	msg.msg_iovlen = iovlen,
+
+	err = sendmsg(fd, &msg, 0);
+	if (err < 0) {
+		perror("sendmsg error");
+		goto out;
+	}
+	
+	iov[0].iov_base = buf;
+	iov[0].iov_len = sizeof(buf);
+	err = recvmsg(fd, &msg, 0);
+	if (err < 0) {
+		perror("recvmsg error");
+		goto out;
+	}
+
+#if 0
+	if (err != sizeof(*reply)) {
+		printf("kproxy query return size invalid (%i != %lu)\n", err, sizeof(*reply));
+		goto out;
+	}
+#endif
+
+	n = buf;
+	//while (NLMSG_OK(n, err)) {
+	if (n->nlmsg_type == NLMSG_ERROR) {
+		printf("nlmsg reply errors\n");
+		goto out;
+	}
+	show_reply(n, err);
+	//	n = NLMSG_NEXT(n, err);
+	//}
+out:
+	close(fd);
+}
 
 /* a bunch of global context */
 struct kproxy_socks frontend_client = {0}, frontend_server = {0};
@@ -408,6 +634,10 @@ int main(int argc, char **argv)
 #endif
 
 	printf("run threads\n");
+	while (running) {
+		kproxy_query();
+		sleep(2);
+	}
 	pthread_join(frontend_client_t, NULL);
 	pthread_join(frontend_server_t, NULL);
 	pthread_join(backend_client_t, NULL);

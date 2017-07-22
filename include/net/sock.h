@@ -1117,6 +1117,7 @@ struct proto {
 		struct udp_table	*udp_table;
 		struct raw_hashinfo	*raw_hash;
 		struct smc_hashinfo	*smc_hash;
+		struct kproxy_hashinfo  *kproxy_hash;
 	} h;
 
 	struct module		*owner;
