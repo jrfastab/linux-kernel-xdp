@@ -75,7 +75,6 @@ static struct kproxy_psock *kproxy_peers_get(struct kproxy_psock *psock,
 	index = kproxy_mux_func(psock, skb);
 	if (unlikely(index < 0 || index >= peers->max_peers))
 		return NULL;
-	printk("%s: target peer %i\n", __func__, index);
 
 	return rcu_dereference(peers->socks[index]);
 }
@@ -128,7 +127,26 @@ static void kproxy_report_deferred_error(struct kproxy_psock *psock)
 
 static void kproxy_state_change(struct sock *sk)
 {
-	//kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
+	/* Allowing transitions into established an syn_recv states allows
+	 * for early binding sockets to a kproxy object before the connection
+	 * is established. All other transitions indicate the connection is
+	 * being torn down so tear down the kproxy socket.
+	 */
+	switch (sk->sk_state) {
+	case TCP_SYN_RECV:
+	case TCP_ESTABLISHED:
+		break;
+	case TCP_CLOSE_WAIT:
+	case TCP_CLOSING:
+	case TCP_LAST_ACK:
+	case TCP_FIN_WAIT1:
+	case TCP_FIN_WAIT2:
+	case TCP_LISTEN:
+	case TCP_CLOSE:
+	default:
+		kproxy_report_sk_error(kproxy_psock_sk(sk), EPIPE, false);
+		break;
+	}
 }
 
 static void kproxy_tx_work(struct work_struct *w);
@@ -188,7 +206,6 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 	rcu_read_lock();
 	peer = kproxy_peers_get(psock, skb);
 	if (unlikely(!peer)) {
-		printk("%s: invalid peer from mux\n", __func__);
 		kfree_skb(skb);
 		goto out;
 	}
@@ -198,8 +215,6 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 		kfree_skb(skb);
 		goto out;
 	}
-
-	printk("%s: valid peer recv and target\n", __func__);
 
 	/* Push a message to peers queue and pause the parser if the peer
 	 * exceedes the high water mark. Note because we must consume
@@ -213,7 +228,6 @@ static void kproxy_read_sock_strparser(struct strparser *strp,
 		goto out;
 	}
 
-	printk("%s: kproxy recv done %i\n", __func__, err);
 	/* Probably got some data, kick writer side */
 	if (likely(!skb_queue_empty(&peer->rxqueue)))
 		kproxy_tx_writer(peer);
@@ -227,7 +241,6 @@ static void kproxy_data_ready(struct sock *sk)
 {
 	struct kproxy_psock *psock;
 
-	printk("%s: data ready\n", __func__);
 	read_lock_bh(&sk->sk_callback_lock);
 
 	psock = kproxy_psock_sk(sk);
@@ -265,7 +278,6 @@ static void kproxy_tx_work(struct work_struct *w)
 {
 	struct kproxy_psock *psock;
 	struct sk_buff *skb;
-	struct socket *sk;
 	int orig_consumed;
 	int sent, n;
 
@@ -273,7 +285,6 @@ static void kproxy_tx_work(struct work_struct *w)
 	if (unlikely(psock->tx_stopped))
 		return;
 
-	printk("%s: ...\n", __func__);
 	if (unlikely(!psock->sock->sk_socket))
 		return;
 
@@ -286,13 +297,11 @@ static void kproxy_tx_work(struct work_struct *w)
 		goto start;
 	}
 
-	printk("%s: skb dequeu\n", __func__);
 	while ((skb = skb_dequeue(&psock->rxqueue))) {
 		sent = 0;
 start:
 		do {
 			n = skb_send_sock(skb, psock->sock->sk_socket, sent);
-			printk("%s: send_sock %i\n", __func__, n);
 			if (n <= 0) {
 				if (n == -EAGAIN) {
 					/* Save state to try again when
@@ -308,11 +317,9 @@ start:
 				 * been closed somehow. Report this
 				 * on the transport socket.
 				 */
-#if 0
 				kproxy_report_sk_error(psock,
 						       n ? -n : EPIPE, true);
 				psock->tx_stopped = 1;
-#endif
 				goto out;
 			}
 			sent += n;
@@ -344,7 +351,6 @@ static void kproxy_write_space(struct sock *sk)
 {
 	struct kproxy_psock *psock = kproxy_psock_sk(sk);
 
-printk("%s: write space\n", __func__);
 	schedule_writer(psock);
 }
 
@@ -559,14 +565,8 @@ static struct kproxy_psock *kproxy_init_psock(struct sock *sock,
 	prog = bpf_prog_get_type(ksock->bpf_fd_parse,
 				 BPF_PROG_TYPE_SOCKET_FILTER);
 	if (IS_ERR(prog)) {
-		printk("%s: error bpf prog get\n", __func__);
 		return ERR_PTR(-EINVAL);
 	}
-#if 0
-		err = PTR_ERR(prog);
-		return ERR_PTR(err);
-	}
-#endif
 
 	if (ksock->bpf_fd_mux) {
 		mux_prog = bpf_prog_get_type(ksock->bpf_fd_mux,
@@ -597,9 +597,6 @@ static struct kproxy_psock *kproxy_init_psock(struct sock *sock,
 		goto alloc_err;
 	return psock;
 alloc_err:
-#if 0
-	fput(sock->file);
-#endif
 	if (mux_prog)
 		bpf_prog_put(mux_prog);
 	bpf_prog_put(prog);
