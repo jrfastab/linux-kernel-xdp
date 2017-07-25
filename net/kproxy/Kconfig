@@ -8,3 +8,10 @@ config AF_KPROXY
 	  Kernel proxy implements an in kernel TCP proxy for performance.
 	  Filtering is done by BPF on incoming sockets.
 
+config KPROXY_DIAG
+	tristate "KPROXY: socket monitoring interface"
+	depends on AF_KPROXY 
+	---help---
+	  Support for KPROXY socket monitoring interface.
+
+	  if unsure, say Y.
