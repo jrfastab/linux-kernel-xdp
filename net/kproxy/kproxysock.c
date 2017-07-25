@@ -689,6 +689,12 @@ out:
 	return err;
 }
 
+int kproxy_bind_bpf(struct socket *kproxy, struct sock *s, int i, u64 flags)
+{
+	return  kproxy_join_sockets(kproxy, s, i);
+}
+EXPORT_SYMBOL(kproxy_bind_bpf);
+
 static int kproxy_attach(struct socket *sock, struct kproxy_attach *info)
 {
 	struct kproxy_sock *ksock = kproxy_sk(sock->sk);

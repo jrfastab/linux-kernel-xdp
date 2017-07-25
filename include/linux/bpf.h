@@ -15,6 +15,8 @@
 #include <linux/err.h>
 #include <linux/rbtree_latch.h>
 
+#include <net/sock.h>
+
 struct perf_event;
 struct bpf_map;
 
@@ -383,6 +385,15 @@ static inline struct socket  *__sock_map_lookup_elem(struct bpf_map *m, u32 k)
 	return NULL;
 }
 #endif /* CONFIG_BPF_SYSCALL */
+
+#ifdef CONFIG_AF_KPROXY
+int kproxy_bind_bpf(struct socket *kproxy, struct sock *s, int index, u64 flags);
+#else
+int kproxy_bind_bpf(struct socket *kproxy, struct sock *s, int index, u64 flags)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* KPROXY */
 
 /* verifier prototypes for helper functions called from eBPF programs */
 extern const struct bpf_func_proto bpf_map_lookup_elem_proto;

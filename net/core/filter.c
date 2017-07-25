@@ -1845,6 +1845,40 @@ static const struct bpf_func_proto bpf_redirect_map_proto = {
 	.arg3_type      = ARG_ANYTHING,
 };
 
+BPF_CALL_5(bpf_sk_redirect_map,
+	   struct bpf_sock_ops_kern *, bpf_sock,
+	   struct bpf_map *, map,
+	   int, proxy,
+	   int, index,
+	   int, flags)
+{
+	struct sock *sk = bpf_sock->sk;
+	struct socket *kproxy;
+
+	if (!sk_fullsock(sk))
+		return -EINVAL;
+
+	if (unlikely(flags))
+		return BPF_SOCK_OPS_ABORT;
+
+	kproxy = __sock_map_lookup_elem(map, proxy);
+	if (!kproxy)
+		return -EINVAL;
+
+	return kproxy_bind_bpf(kproxy, sk, index, flags);
+}
+
+static const struct bpf_func_proto bpf_sk_redirect_map_proto = {
+	.func           = bpf_sk_redirect_map,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_CONST_MAP_PTR,
+	.arg3_type      = ARG_ANYTHING,
+	.arg4_type      = ARG_ANYTHING,
+	.arg5_type      = ARG_ANYTHING,
+};
+
 BPF_CALL_1(bpf_get_cgroup_classid, const struct sk_buff *, skb)
 {
 	return task_get_classid(skb);
@@ -3214,6 +3248,8 @@ static const struct bpf_func_proto *
 	switch (func_id) {
 	case BPF_FUNC_setsockopt:
 		return &bpf_setsockopt_proto;
+	case BPF_FUNC_sk_redirect_map:
+		return &bpf_sk_redirect_map_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}
