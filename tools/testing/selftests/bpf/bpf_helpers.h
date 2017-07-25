@@ -65,6 +65,9 @@ static int (*bpf_xdp_adjust_head)(void *ctx, int offset) =
 static int (*bpf_setsockopt)(void *ctx, int level, int optname, void *optval,
 			     int optlen) =
 	(void *) BPF_FUNC_setsockopt;
+static int (*bpf_sk_redirect_map)(void *ctx, void *map, int proxy,
+				  int ep, int flags) =
+	(void *) BPF_FUNC_sk_redirect_map;
 
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
