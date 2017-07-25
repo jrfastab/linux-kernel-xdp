@@ -794,10 +794,43 @@ static const struct proto_ops kproxy_dgram_ops = {
 	.sendpage =	sock_no_sendpage,
 };
 
+int kproxy_hash_sk(struct sock *sk)
+{
+	struct kproxy_hashinfo *h = sk->sk_prot->h.kproxy_hash;
+	struct hlist_head *head;
+
+	head = &h->ht;
+
+	write_lock_bh(&h->lock);
+	sk_add_node(sk, head);
+	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+	write_unlock_bh(&h->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kproxy_hash_sk);
+
+void kproxy_unhash_sk(struct sock *sk)
+{
+	struct kproxy_hashinfo *h = sk->sk_prot->h.kproxy_hash;
+
+	write_lock_bh(&h->lock);
+	if (sk_del_node_init(sk))
+		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
+	write_unlock_bh(&h->lock);
+}
+
+static struct kproxy_hashinfo kproxy_hashinfo = {
+	.lock = __RW_LOCK_UNLOCKED(kproxy_hashinfo.lock),
+};
+
 struct proto kproxy_proto = {
 	.name   = "KPROXY",
 	.owner  = THIS_MODULE,
+	.hash   = kproxy_hash_sk,
+	.unhash = kproxy_unhash_sk,
 	.obj_size = sizeof(struct kproxy_sock),
+	.h.kproxy_hash = &kproxy_hashinfo,
 };
 EXPORT_SYMBOL_GPL(kproxy_proto);
 
