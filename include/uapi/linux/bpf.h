@@ -105,6 +105,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_ARRAY_OF_MAPS,
 	BPF_MAP_TYPE_HASH_OF_MAPS,
 	BPF_MAP_TYPE_DEVMAP,
+	BPF_MAP_TYPE_SOCKMAP,
 };
 
 enum bpf_prog_type {
@@ -598,7 +599,8 @@ union bpf_attr {
 	FN(set_hash),			\
 	FN(setsockopt),			\
 	FN(skb_adjust_room),		\
-	FN(redirect_map),
+	FN(redirect_map),		\
+	FN(sk_redirect_map),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -733,6 +735,11 @@ enum xdp_action {
 struct xdp_md {
 	__u32 data;
 	__u32 data_end;
+};
+
+enum kproxy_action {
+	BPF_SOCK_OPS_ABORT,
+	BPF_SOCK_OPS_KPROXY_BIND,
 };
 
 #define BPF_TAG_SIZE	8
