@@ -105,6 +105,11 @@ static int (*bpf_skb_under_cgroup)(void *ctx, void *map, int index) =
 static int (*bpf_skb_change_head)(void *, int len, int flags) =
 	(void *) BPF_FUNC_skb_change_head;
 
+static int (*bpf_skb_get_remote_port)(void *ctx) =
+	(void *) BPF_FUNC_skb_get_remote_port;
+static int (*bpf_skb_get_local_port)(void *ctx) =
+	(void *) BPF_FUNC_skb_get_local_port;
+
 #if defined(__x86_64__)
 
 #define PT_REGS_PARM1(x) ((x)->di)
