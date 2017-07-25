@@ -83,6 +83,8 @@ static inline int strp_peek_len(struct strparser *strp)
 {
 	struct socket *sock = strp->sk->sk_socket;
 
+	if (unlikely(!sock || !sock->ops || !sock->ops->peek_len))
+		return 0;
 	return sock->ops->peek_len(sock);
 }
 
@@ -340,6 +342,9 @@ static int strp_read_sock(struct strparser *strp)
 	struct socket *sock = strp->sk->sk_socket;
 	read_descriptor_t desc;
 
+	if (unlikely(!sock || !sock->ops || !sock->ops->read_sock))
+		return -EBUSY;
+
 	desc.arg.data = strp;
 	desc.error = 0;
 	desc.count = 1; /* give more than one skb per call */
@@ -429,13 +434,8 @@ static void strp_rx_msg_timeout(unsigned long arg)
 int strp_init(struct strparser *strp, struct sock *csk,
 	      struct strp_callbacks *cb)
 {
-	struct socket *sock = csk->sk_socket;
-
 	if (!cb || !cb->rcv_msg || !cb->parse_msg)
 		return -EINVAL;
-
-	if (!sock->ops->read_sock || !sock->ops->peek_len)
-		return -EAFNOSUPPORT;
 
 	memset(strp, 0, sizeof(*strp));
 
