@@ -15,6 +15,8 @@
 #include <linux/err.h>
 #include <linux/rbtree_latch.h>
 
+#include <net/sock.h>
+
 struct perf_event;
 struct bpf_map;
 
@@ -29,6 +31,9 @@ struct bpf_map_ops {
 	/* funcs callable from userspace and from eBPF programs */
 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
 	int (*map_update_elem)(struct bpf_map *map, void *key, void *value, u64 flags);
+	int (*map_ctx_update_elem)(struct bpf_sock_ops_kern *skops,
+				   struct bpf_map *map,
+				   void *key, u64 flags, u64 map_flags);
 	int (*map_delete_elem)(struct bpf_map *map, void *key);
 
 	/* funcs called by prog_array and perf_event_array map */
@@ -37,6 +42,7 @@ struct bpf_map_ops {
 	void (*map_fd_put_ptr)(void *ptr);
 	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 	u32 (*map_fd_sys_lookup_elem)(void *ptr);
+	int (*map_attach)(struct bpf_map *map, struct bpf_prog *p1, struct bpf_prog *p2);
 };
 
 struct bpf_map {
@@ -321,6 +327,7 @@ int bpf_check(struct bpf_prog **fp, union bpf_attr *attr);
 
 /* Map specifics */
 struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key);
+struct sock  *__sock_map_lookup_elem(struct bpf_map *map, u32 key);
 void __dev_map_insert_ctx(struct bpf_map *map, u32 index);
 void __dev_map_flush(struct bpf_map *map);
 
@@ -378,9 +385,13 @@ static inline void __dev_map_flush(struct bpf_map *map)
 }
 #endif /* CONFIG_BPF_SYSCALL */
 
+inline struct sock *do_sk_redirect_map(void);
+inline u64 get_sk_redirect_flags(void);
+
 /* verifier prototypes for helper functions called from eBPF programs */
 extern const struct bpf_func_proto bpf_map_lookup_elem_proto;
 extern const struct bpf_func_proto bpf_map_update_elem_proto;
+extern const struct bpf_func_proto bpf_map_ctx_update_elem_proto;
 extern const struct bpf_func_proto bpf_map_delete_elem_proto;
 
 extern const struct bpf_func_proto bpf_get_prandom_u32_proto;
