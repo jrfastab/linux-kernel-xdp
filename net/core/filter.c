@@ -1845,6 +1845,51 @@ static const struct bpf_func_proto bpf_redirect_map_proto = {
 	.arg3_type      = ARG_ANYTHING,
 };
 
+BPF_CALL_3(bpf_sk_redirect_map, struct bpf_map *, map, u32, key, u64, flags)
+{
+	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+
+	ri->ifindex = key;
+	ri->flags = flags;
+	ri->map = map;
+
+	return SK_REDIRECT;
+}
+
+inline struct sock *do_sk_redirect_map(void)
+{
+	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+	struct sock *sk = NULL;
+       
+	if (ri->map) {
+		sk = __sock_map_lookup_elem(ri->map, ri->ifindex);
+
+		ri->ifindex = 0;
+		ri->map = NULL;
+		/* we do not clear flags for future lookup */
+	}
+
+	return sk;
+}
+EXPORT_SYMBOL(do_sk_redirect_map);
+
+inline u64 get_sk_redirect_flags(void)
+{
+	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+
+	return ri->flags;
+}
+EXPORT_SYMBOL(get_sk_redirect_flags);
+
+static const struct bpf_func_proto bpf_sk_redirect_map_proto = {
+	.func           = bpf_sk_redirect_map,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_CONST_MAP_PTR,
+	.arg2_type      = ARG_ANYTHING,
+	.arg3_type      = ARG_ANYTHING,
+};
+
 BPF_CALL_1(bpf_get_cgroup_classid, const struct sk_buff *, skb)
 {
 	return task_get_classid(skb);
@@ -2948,6 +2993,38 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+BPF_CALL_1(bpf_get_remote_port, struct sk_buff *, skb)
+{
+	struct sock *sk = skb->sk;//sk_to_full_sk(skb->sk);
+
+	if (!sk)// || !sk_fullsock(sk))
+		return overflowuid;
+	return sk->sk_dport;
+}
+
+static const struct bpf_func_proto bpf_skb_get_remote_port_proto = {
+	.func           = bpf_get_remote_port,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+};
+
+BPF_CALL_1(bpf_get_local_port, struct sk_buff *, skb)
+{
+	struct sock *sk = skb->sk;
+
+	if (!sk)// || !sk_fullsock(sk))
+		return overflowuid;
+	return sk->sk_num;
+}
+
+static const struct bpf_func_proto bpf_skb_get_local_port_proto = {
+	.func           = bpf_get_local_port,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+};
+
 BPF_CALL_5(bpf_setsockopt, struct bpf_sock_ops_kern *, bpf_sock,
 	   int, level, int, optname, char *, optval, int, optlen)
 {
@@ -3090,6 +3167,14 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_socket_cookie_proto;
 	case BPF_FUNC_get_socket_uid:
 		return &bpf_get_socket_uid_proto;
+	case BPF_FUNC_skb_get_remote_port:
+		return &bpf_skb_get_remote_port_proto;
+	case BPF_FUNC_skb_get_local_port:
+		return &bpf_skb_get_local_port_proto;
+	case BPF_FUNC_sk_redirect_map:
+		return &bpf_sk_redirect_map_proto;
+	case BPF_FUNC_map_ctx_update_elem:
+		return &bpf_map_ctx_update_elem_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}
@@ -3214,6 +3299,8 @@ static const struct bpf_func_proto *
 	switch (func_id) {
 	case BPF_FUNC_setsockopt:
 		return &bpf_setsockopt_proto;
+	case BPF_FUNC_map_ctx_update_elem:
+		return &bpf_map_ctx_update_elem_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}
