@@ -604,6 +604,8 @@ union bpf_attr {
 	FN(redirect_map),		\
 	FN(sk_redirect_map),		\
 	FN(map_ctx_update_elem),	\
+	FN(skb_get_local_port),		\
+	FN(skb_get_remote_port),	\
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
