@@ -219,6 +219,12 @@ static int load_maps(struct bpf_map_data *maps, int nr_maps,
 							inner_map_fd,
 							maps[i].def.max_entries,
 							maps[i].def.map_flags);
+		} else if (maps[i].def.type == BPF_MAP_TYPE_SOCKMAP) {
+			map_fd[i] = bpf_create_map_in_map(maps[i].def.type,
+							maps[i].def.key_size,
+							maps[i].def.inner_map_idx,
+							maps[i].def.max_entries,
+							maps[i].def.map_flags);
 		} else {
 			map_fd[i] = bpf_create_map(maps[i].def.type,
 						   maps[i].def.key_size,
