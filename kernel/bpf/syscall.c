@@ -1045,7 +1045,40 @@ static int bpf_obj_get(const union bpf_attr *attr)
 
 #ifdef CONFIG_CGROUP_BPF
 
-#define BPF_PROG_ATTACH_LAST_FIELD attach_flags
+#define BPF_PROG_ATTACH_LAST_FIELD attach_bpf_fd2
+
+static int sockmap_get_from_fd(const union bpf_attr *attr, int ptype)
+{
+	struct bpf_prog *prog1, *prog2;
+	struct bpf_map *map;
+	int err;
+
+	map = bpf_map_get_with_uref(attr->target_fd);
+	if (IS_ERR(map))
+		return PTR_ERR(map);
+
+	if (!map->ops->map_attach)
+		return -EOPNOTSUPP;
+
+	prog1 = bpf_prog_get_type(attr->attach_bpf_fd, ptype);
+	if (IS_ERR(prog1))
+		return PTR_ERR(prog1);
+
+	prog2 = bpf_prog_get_type(attr->attach_bpf_fd2, ptype);
+	if (IS_ERR(prog2)) {
+		bpf_prog_put(prog1);
+		return PTR_ERR(prog2);
+	}
+
+	err = map->ops->map_attach(map, prog1, prog2);
+	if (err) {
+		bpf_prog_put(prog1);
+		bpf_prog_put(prog2);
+		return PTR_ERR(map);
+	}
+
+	return err;
+}
 
 static int bpf_prog_attach(const union bpf_attr *attr)
 {
@@ -1074,9 +1107,15 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 	case BPF_CGROUP_SOCK_OPS:
 		ptype = BPF_PROG_TYPE_SOCK_OPS;
 		break;
+	case BPF_SOCKMAP_INGRESS:
+		ptype = BPF_PROG_TYPE_SK_SKB;
+		break;
 	default:
 		return -EINVAL;
 	}
+
+	if (attr->attach_type == BPF_SOCKMAP_INGRESS)
+		return sockmap_get_from_fd(attr, ptype);
 
 	prog = bpf_prog_get_type(attr->attach_bpf_fd, ptype);
 	if (IS_ERR(prog))
