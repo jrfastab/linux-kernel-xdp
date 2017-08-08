@@ -15,6 +15,8 @@
 #include <linux/err.h>
 #include <linux/rbtree_latch.h>
 
+#include <net/sock.h>
+
 struct perf_event;
 struct bpf_map;
 
@@ -37,6 +39,8 @@ struct bpf_map_ops {
 	void (*map_fd_put_ptr)(void *ptr);
 	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 	u32 (*map_fd_sys_lookup_elem)(void *ptr);
+	int (*map_attach)(struct bpf_map *map,
+			  struct bpf_prog *p1, struct bpf_prog *p2);
 };
 
 struct bpf_map {
@@ -322,6 +326,7 @@ int bpf_check(struct bpf_prog **fp, union bpf_attr *attr);
 
 /* Map specifics */
 struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key);
+struct sock  *__sock_map_lookup_elem(struct bpf_map *map, u32 key);
 void __dev_map_insert_ctx(struct bpf_map *map, u32 index);
 void __dev_map_flush(struct bpf_map *map);
 
@@ -385,6 +390,9 @@ static inline void __dev_map_flush(struct bpf_map *map)
 }
 #endif /* CONFIG_BPF_SYSCALL */
 
+inline struct sock *do_sk_redirect_map(void);
+inline u64 get_sk_redirect_flags(void);
+
 /* verifier prototypes for helper functions called from eBPF programs */
 extern const struct bpf_func_proto bpf_map_lookup_elem_proto;
 extern const struct bpf_func_proto bpf_map_update_elem_proto;
@@ -401,6 +409,7 @@ extern const struct bpf_func_proto bpf_get_current_comm_proto;
 extern const struct bpf_func_proto bpf_skb_vlan_push_proto;
 extern const struct bpf_func_proto bpf_skb_vlan_pop_proto;
 extern const struct bpf_func_proto bpf_get_stackid_proto;
+extern const struct bpf_func_proto bpf_sock_map_update_proto;
 
 /* Shared helpers among cBPF and eBPF. */
 void bpf_user_rnd_init_once(void);
