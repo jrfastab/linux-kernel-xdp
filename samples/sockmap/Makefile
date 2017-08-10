@@ -2,7 +2,7 @@
 obj- := dummy.o
 
 # List of programs to build
-hostprogs-y := sockmap
+hostprogs-y := sockmap test_sockmap
 
 # Libbpf dependencies
 LIBBPF := ../../tools/lib/bpf/bpf.o
@@ -14,12 +14,14 @@ HOSTCFLAGS += -I$(srctree)/tools/lib/ -I$(srctree)/tools/include
 HOSTCFLAGS += -I$(srctree)/tools/perf
 
 sockmap-objs := ../bpf/bpf_load.o $(LIBBPF) sockmap_user.o
+test_sockmap-objs := ../bpf/bpf_load.o $(LIBBPF) test_sockmap.o
 
 # Tell kbuild to always build the programs
 always := $(hostprogs-y)
 always += sockmap_kern.o
 
 HOSTLOADLIBES_sockmap += -lelf -lpthread
+HOSTLOADLIBES_test_sockmap += -lelf -lpthread
 
 # Allows pointing LLC/CLANG to a LLVM backend with bpf support, redefine on cmdline:
 #  make samples/bpf/ LLC=~/git/llvm/build/bin/llc CLANG=~/git/llvm/build/bin/clang
