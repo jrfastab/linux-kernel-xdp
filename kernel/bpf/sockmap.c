@@ -389,6 +389,8 @@ static void smap_init_progs(struct smap_psock *psock,
 
 static void smap_start_sock(struct smap_psock *psock, struct sock *sk)
 {
+	if (sk->sk_data_ready == smap_data_ready)
+		return;
 	psock->save_data_ready = sk->sk_data_ready;
 	psock->save_write_space = sk->sk_write_space;
 	psock->save_state_change = sk->sk_state_change;
