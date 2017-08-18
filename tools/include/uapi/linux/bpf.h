@@ -136,7 +136,8 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
 	BPF_CGROUP_SOCK_OPS,
-	BPF_CGROUP_SMAP_INGRESS,
+	BPF_SK_SKB_STREAM_PARSER,
+	BPF_SK_SKB_STREAM_VERDICT,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -577,9 +578,6 @@ union bpf_attr {
  *	@map: pointer to sockmap to update
  *	@key: key to insert/update sock in map
  *	@flags: same flags as map update elem
- *	@map_flags: sock map specific flags
- *	   bit 1: Enable strparser
- *	   other bits: reserved
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
