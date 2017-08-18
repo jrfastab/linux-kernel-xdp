@@ -143,9 +143,6 @@ enum bpf_attach_type {
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
 
-/* If BPF_SOCKMAP_STRPARSER is used sockmap will use strparser on receive */
-#define BPF_SOCKMAP_STRPARSER	(1U << 0)
-
 /* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command
  * to the given target_fd cgroup the descendent cgroup will be able to
  * override effective bpf program that was inherited from this cgroup
@@ -573,14 +570,11 @@ union bpf_attr {
  *     @flags: reserved for future use
  *     Return: SK_REDIRECT
  *
- * int bpf_sock_map_update(skops, map, key, flags, map_flags)
+ * int bpf_sock_map_update(skops, map, key, flags)
  *	@skops: pointer to bpf_sock_ops
  *	@map: pointer to sockmap to update
  *	@key: key to insert/update sock in map
  *	@flags: same flags as map update elem
- *	@map_flags: sock map specific flags
- *	   bit 1: Enable strparser
- *	   other bits: reserved
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
