@@ -63,21 +63,20 @@ struct smap_psock {
 	struct rcu_head	rcu;
 	refcount_t refcnt;
 
-	/* datapath variables */
+	/* TX variables */
 	struct sk_buff_head rxqueue;
-	bool strp_enabled;
-
-	/* datapath error path cache across tx work invocations */
 	int save_rem;
 	int save_off;
 	struct sk_buff *save_skb;
 
+	/* RX variables */
+	bool strp_enabled;
 	struct strparser strp;
 	struct bpf_prog *bpf_parse;
 	struct bpf_prog *bpf_verdict;
 	struct list_head maps;
 
-	/* Back reference used when sock callback trigger sockmap operations */
+	/* sock object references */
 	struct sock *sock;
 	unsigned long state;
 
