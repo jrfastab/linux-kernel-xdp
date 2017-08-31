@@ -48,7 +48,7 @@ struct bpf_stab {
 };
 
 enum smap_psock_state {
-	SMAP_TX_RUNNING,
+	SMAP_RUNNING,
 };
 
 struct smap_psock_map_entry {
@@ -62,7 +62,7 @@ struct smap_psock {
 	u32 refcnt;
 
 	/* datapath variables */
-	struct sk_buff_head rxqueue;
+	struct sk_buff_head txqueue;
 	bool strp_enabled;
 
 	/* datapath error path cache across tx work invocations */
@@ -129,11 +129,11 @@ static void smap_do_verdict(struct smap_psock *psock, struct sk_buff *skb)
 			struct smap_psock *peer = smap_psock_sk(sk);
 
 			if (likely(peer &&
-				   test_bit(SMAP_TX_RUNNING, &peer->state) &&
+				   test_bit(SMAP_RUNNING, &peer->state) &&
 				   !sock_flag(sk, SOCK_DEAD) &&
 				   sock_writeable(sk))) {
 				skb_set_owner_w(skb, sk);
-				skb_queue_tail(&peer->rxqueue, skb);
+				skb_queue_tail(&peer->txqueue, skb);
 				schedule_work(&peer->tx_work);
 				break;
 			}
@@ -261,7 +261,7 @@ static void smap_tx_work(struct work_struct *w)
 		goto start;
 	}
 
-	while ((skb = skb_dequeue(&psock->rxqueue))) {
+	while ((skb = skb_dequeue(&psock->txqueue))) {
 		rem = skb->len;
 		off = 0;
 start:
@@ -281,7 +281,7 @@ start:
 				}
 				/* Hard errors break pipe and stop xmit */
 				smap_report_sk_error(psock, n ? -n : EPIPE);
-				clear_bit(SMAP_TX_RUNNING, &psock->state);
+				clear_bit(SMAP_RUNNING, &psock->state);
 				kfree_skb(skb);
 				goto out;
 			}
@@ -300,7 +300,7 @@ static void smap_write_space(struct sock *sk)
 
 	rcu_read_lock();
 	psock = smap_psock_sk(sk);
-	if (likely(psock && test_bit(SMAP_TX_RUNNING, &psock->state)))
+	if (likely(psock && test_bit(SMAP_RUNNING, &psock->state)))
 		schedule_work(&psock->tx_work);
 	rcu_read_unlock();
 }
@@ -340,7 +340,7 @@ static void smap_release_sock(struct smap_psock *psock, struct sock *sock)
 		return;
 
 	smap_stop_sock(psock, sock);
-	clear_bit(SMAP_TX_RUNNING, &psock->state);
+	clear_bit(SMAP_RUNNING, &psock->state);
 	rcu_assign_sk_user_data(sock, NULL);
 	call_rcu_sched(&psock->rcu, smap_destroy_psock);
 }
@@ -441,7 +441,7 @@ static void smap_gc_work(struct work_struct *w)
 		strp_done(&psock->strp);
 
 	cancel_work_sync(&psock->tx_work);
-	__skb_queue_purge(&psock->rxqueue);
+	__skb_queue_purge(&psock->txqueue);
 
 	/* At this point all strparser and xmit work must be complete */
 	if (psock->bpf_parse)
@@ -470,7 +470,7 @@ static struct smap_psock *smap_init_psock(struct sock *sock,
 		return ERR_PTR(-ENOMEM);
 
 	psock->sock = sock;
-	skb_queue_head_init(&psock->rxqueue);
+	skb_queue_head_init(&psock->txqueue);
 	INIT_WORK(&psock->tx_work, smap_tx_work);
 	INIT_WORK(&psock->gc_work, smap_gc_work);
 	INIT_LIST_HEAD(&psock->maps);
@@ -739,7 +739,7 @@ static int sock_map_ctx_update_elem(struct bpf_sock_ops_kern *skops,
 			goto out_progs;
 		}
 
-		set_bit(SMAP_TX_RUNNING, &psock->state);
+		set_bit(SMAP_RUNNING, &psock->state);
 	}
 
 	e = kzalloc(sizeof(*e), GFP_ATOMIC | __GFP_NOWARN);
