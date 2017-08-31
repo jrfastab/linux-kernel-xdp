@@ -1839,7 +1839,7 @@ BPF_CALL_3(bpf_sk_redirect_map, struct bpf_map *, map, u32, key, u64, flags)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 
-	if (unlikely(flags))
+	if (unlikely(flags & ~(BPF_F_INGRESS)))
 		return SK_ABORTED;
 
 	ri->ifindex = key;
@@ -1849,17 +1849,18 @@ BPF_CALL_3(bpf_sk_redirect_map, struct bpf_map *, map, u32, key, u64, flags)
 	return SK_REDIRECT;
 }
 
-struct sock *do_sk_redirect_map(void)
+struct sock *do_sk_redirect_map(u32 *flags)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 	struct sock *sk = NULL;
 
 	if (ri->map) {
 		sk = __sock_map_lookup_elem(ri->map, ri->ifindex);
+		*flags = ri->flags;
 
 		ri->ifindex = 0;
 		ri->map = NULL;
-		/* we do not clear flags for future lookup */
+		ri->flags = 0;
 	}
 
 	return sk;

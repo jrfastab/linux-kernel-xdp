@@ -39,6 +39,7 @@
 #include <linux/workqueue.h>
 #include <linux/list.h>
 #include <net/strparser.h>
+#include <net/tcp.h>
 
 struct bpf_stab {
 	struct bpf_map map;
@@ -63,6 +64,7 @@ struct smap_psock {
 
 	/* datapath variables */
 	struct sk_buff_head txqueue;
+	struct sk_buff_head rxqueue;
 	bool strp_enabled;
 
 	/* datapath error path cache across tx work invocations */
@@ -80,6 +82,7 @@ struct smap_psock {
 	unsigned long state;
 
 	struct work_struct tx_work;
+	struct work_struct rx_work;
 	struct work_struct gc_work;
 
 	void (*save_data_ready)(struct sock *sk);
@@ -92,9 +95,10 @@ static inline struct smap_psock *smap_psock_sk(const struct sock *sk)
 	return rcu_dereference_sk_user_data(sk);
 }
 
-static int smap_verdict_func(struct smap_psock *psock, struct sk_buff *skb)
+static int smap_verdict_func(struct smap_psock *psock,
+			     struct bpf_prog *prog,
+			     struct sk_buff *skb)
 {
-	struct bpf_prog *prog = READ_ONCE(psock->bpf_verdict);
 	int rc;
 
 	if (unlikely(!prog))
@@ -109,10 +113,50 @@ static int smap_verdict_func(struct smap_psock *psock, struct sk_buff *skb)
 	return rc;
 }
 
+static inline bool is_ingress_ok(struct sock *sk)
+{
+	return atomic_read(&sk->sk_rmem_alloc) < sk->sk_rcvbuf;
+}
+
+int sk_redirect(struct sk_buff *skb)
+{
+	struct smap_psock *peer = NULL;
+	struct sock *sk;
+	int err = 0;
+	u32 flags;
+
+	sk = do_sk_redirect_map(&flags);
+	preempt_enable();
+	if (unlikely(!sk))
+		return -EINVAL;
+
+	peer = smap_psock_sk(sk);
+
+	if (unlikely(!peer ||
+		     sock_flag(sk, SOCK_DEAD) ||
+		     !test_bit(SMAP_RUNNING, &peer->state)))
+		return -EINVAL;
+
+	if (!flags && sock_writeable(sk)) {
+		skb_set_owner_w(skb, sk);
+		skb_queue_tail(&peer->txqueue, skb);
+		schedule_work(&peer->tx_work);
+	} else if ((flags & BPF_F_INGRESS) &&
+		   is_ingress_ok(sk)) {
+		atomic_add(skb->truesize,
+			   &sk->sk_rmem_alloc);
+		skb_queue_tail(&peer->rxqueue, skb);
+		schedule_work(&peer->rx_work);
+	} else {
+		err = -ENOMEM;
+	}
+	return err;
+}
+
 static void smap_do_verdict(struct smap_psock *psock, struct sk_buff *skb)
 {
-	struct sock *sk;
-	int rc;
+	struct bpf_prog *prog = READ_ONCE(psock->bpf_verdict);
+	int rc, err;
 
 	/* Because we use per cpu values to feed input from sock redirect
 	 * in BPF program to do_sk_redirect_map() call we need to ensure we
@@ -120,25 +164,12 @@ static void smap_do_verdict(struct smap_psock *psock, struct sk_buff *skb)
 	 * with CONFIG_PREEMPT_RCU enabled so we must be explicit here.
 	 */
 	preempt_disable();
-	rc = smap_verdict_func(psock, skb);
+	rc = smap_verdict_func(psock, prog, skb);
 	switch (rc) {
 	case SK_REDIRECT:
-		sk = do_sk_redirect_map();
-		preempt_enable();
-		if (likely(sk)) {
-			struct smap_psock *peer = smap_psock_sk(sk);
-
-			if (likely(peer &&
-				   test_bit(SMAP_RUNNING, &peer->state) &&
-				   !sock_flag(sk, SOCK_DEAD) &&
-				   sock_writeable(sk))) {
-				skb_set_owner_w(skb, sk);
-				skb_queue_tail(&peer->txqueue, skb);
-				schedule_work(&peer->tx_work);
-				break;
-			}
-		}
-	/* Fall through and free skb otherwise */
+		err = sk_redirect(skb);
+		if (!err)
+			break;
 	case SK_DROP:
 	default:
 		if (rc != SK_REDIRECT)
@@ -242,6 +273,61 @@ static void smap_data_ready(struct sock *sk)
 	}
 	rcu_read_unlock();
 }
+
+static void smap_tcp_rcv_nxt_update(struct tcp_sock *tp, u32 seq)
+{
+	u32 delta = seq - tp->rcv_nxt;
+
+	sock_owned_by_me((struct sock *)tp);
+	tp->bytes_received += delta;
+	tp->rcv_nxt = seq;
+}
+
+static void smap_rx_work(struct work_struct *w)
+{
+	struct smap_psock *psock;
+	struct sk_buff *skb;
+	bool data = false;
+	struct sock *sk;
+
+	psock = container_of(w, struct smap_psock, rx_work);
+	sk = psock->sock;
+
+	lock_sock(sk);
+	while ((skb = skb_dequeue(&psock->rxqueue))) {
+		atomic_sub(skb->truesize, &sk->sk_rmem_alloc);
+
+		if (unlikely(sk->sk_type != SOCK_STREAM)) {
+			kfree_skb(skb);
+			continue;
+		}
+
+		if (unlikely(skb->len == 0)) {
+			WARN_ON(1);
+			kfree_skb(skb);
+			continue;
+		}
+
+		if (unlikely(TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN))
+			TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_SYN;
+
+		TCP_SKB_CB(skb)->seq = tcp_sk(sk)->rcv_nxt;
+		TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(skb)->seq + skb->len;
+		TCP_SKB_CB(skb)->ack_seq = tcp_sk(sk)->snd_una - 1;
+
+		smap_tcp_rcv_nxt_update(tcp_sk(sk), TCP_SKB_CB(skb)->end_seq);
+		__skb_queue_tail(&sk->sk_receive_queue, skb);
+		skb_set_owner_r(skb, sk);
+
+		data = true;
+	}
+
+	if (data)
+		sk->sk_data_ready(sk);
+
+	release_sock(sk);
+}
+
 
 static void smap_tx_work(struct work_struct *w)
 {
@@ -433,6 +519,7 @@ static void smap_gc_work(struct work_struct *w)
 {
 	struct smap_psock_map_entry *e, *tmp;
 	struct smap_psock *psock;
+	struct sk_buff *skb;
 
 	psock = container_of(w, struct smap_psock, gc_work);
 
@@ -441,7 +528,13 @@ static void smap_gc_work(struct work_struct *w)
 		strp_done(&psock->strp);
 
 	cancel_work_sync(&psock->tx_work);
+	cancel_work_sync(&psock->rx_work);
 	__skb_queue_purge(&psock->txqueue);
+
+	while ((skb = skb_dequeue(&psock->rxqueue))) {
+		atomic_sub(skb->truesize, &psock->sock->sk_rmem_alloc);
+		kfree_skb(skb);
+	}
 
 	/* At this point all strparser and xmit work must be complete */
 	if (psock->bpf_parse)
@@ -471,7 +564,9 @@ static struct smap_psock *smap_init_psock(struct sock *sock,
 
 	psock->sock = sock;
 	skb_queue_head_init(&psock->txqueue);
+	skb_queue_head_init(&psock->rxqueue);
 	INIT_WORK(&psock->tx_work, smap_tx_work);
+	INIT_WORK(&psock->rx_work, smap_rx_work);
 	INIT_WORK(&psock->gc_work, smap_gc_work);
 	INIT_LIST_HEAD(&psock->maps);
 	psock->refcnt = 1;
